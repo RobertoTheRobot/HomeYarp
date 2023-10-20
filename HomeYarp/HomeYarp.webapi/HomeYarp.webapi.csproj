@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>5fb06fdc-038f-48b0-a619-c9dde4c6b392</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
-	  <DockerfileRunArguments>-p 5555:5555 -v C:\temp\volume:/app/config</DockerfileRunArguments>
+	  <DockerfileRunArguments>-p 5555:5555 -v C:\temp\volume\:/app/config</DockerfileRunArguments>
   </PropertyGroup>
 
   <ItemGroup>

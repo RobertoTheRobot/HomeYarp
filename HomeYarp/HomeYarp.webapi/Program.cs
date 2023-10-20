@@ -4,8 +4,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 
 builder.Configuration.Sources.Clear();
-builder.Configuration.AddJsonFile("/app/config/ReverseProxy.json", optional: true, reloadOnChange: true);
-builder.Configuration.AddJsonFile("/app/config/AppSettings.json", optional: true, reloadOnChange: true);
+builder.Configuration.AddJsonFile("config/ReverseProxy.json", optional: true, reloadOnChange: true);
+builder.Configuration.AddJsonFile("config/appsettings.json", optional: true, reloadOnChange: true);
+
+
+
+builder.WebHost.ConfigureKestrel((hostingConfiguration, serverOptions) =>
+{
+    serverOptions.ListenAnyIP(5555);
+});
+
 
 builder.Services.AddReverseProxy();
 
@@ -24,7 +32,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 app.UseAuthorization();
 
