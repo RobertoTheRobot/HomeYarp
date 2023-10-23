@@ -7,5 +7,10 @@ namespace HomeYarp.webapi.Controllers
     [ApiController]
     public class AccountController : ControllerBase
     {
+        [HttpGet]
+        public async Task<IActionResult>Get()
+        {
+            return Ok("test");
+        }
     }
 }
