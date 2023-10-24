@@ -1,5 +1,10 @@
-using Microsoft.Extensions.Configuration;
 using Serilog;
+using Blazorise;
+using Blazorise.Bootstrap;
+using Blazorise.Icons.FontAwesome;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using System.Net;
+using LettuceEncrypt;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,6 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.Sources.Clear();
 builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
 builder.Configuration.AddJsonFile("/app/config/ReverseProxy.json", optional: false, reloadOnChange: true);
+builder.Configuration.AddJsonFile("/app/config/cert.json", optional: false, reloadOnChange: true);
 builder.Configuration.AddJsonFile("/app/config/auth.json", optional: true, reloadOnChange: true);
 
 
@@ -19,21 +25,43 @@ builder.Host
     .Enrich.FromLogContext());
 
 
+builder.Services.AddRazorPages();
+builder.Services.AddServerSideBlazor();
+
+builder.Services
+    .AddBlazorise(options =>
+    {
+        options.Immediate = true;
+    })
+    .AddBootstrapProviders()
+    .AddFontAwesomeIcons();
+
+
+builder.Services.AddControllers();
+
 builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
 
-builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-//builder.Services.AddEndpointsApiExplorer();
-//builder.Services.AddSwaggerGen();
+builder.Services
+    .AddLettuceEncrypt()
+    .PersistDataToDirectory(new DirectoryInfo("/app/config/data"), builder.Configuration["pfxPassword"]);
 
-builder.WebHost.UseKestrel();
-builder.WebHost
-    .ConfigureKestrel((hostingConfiguration, serverOptions) =>
-    {
-        serverOptions.ListenAnyIP(5555);
-    });
+
+builder.WebHost.UseKestrel(k =>
+{
+    var appServices = k.ApplicationServices;
+    k.Listen(
+        IPAddress.Any, 443, listenOptions =>
+            listenOptions.UseHttps(h =>
+            {
+                h.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
+                h.UseLettuceEncrypt(appServices);
+            }));
+
+});
+
+
 
 
 var app = builder.Build();
@@ -49,8 +77,15 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthorization();
 
+app.UseStaticFiles();
+
+app.UseRouting();
+
+app.MapBlazorHub();
+app.MapFallbackToPage("/_Host");
 
 app.MapControllers();
+
 app.MapReverseProxy();
 
 app.Run();
