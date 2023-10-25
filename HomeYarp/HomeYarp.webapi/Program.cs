@@ -42,24 +42,37 @@ builder.Services.AddControllers();
 builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
+builder.Services.AddHttpForwarder();
 
-builder.Services
+
+if(builder.Environment.IsDevelopment())
+{
+    builder.WebHost.UseKestrel(k =>
+    {
+        k.Listen(IPAddress.Any,443);
+    });
+}
+else
+{
+    // Lets encrypt and certificate only when deployed
+    builder.Services
     .AddLettuceEncrypt()
     .PersistDataToDirectory(new DirectoryInfo("/app/config/data"), builder.Configuration["pfxPassword"]);
 
+    builder.WebHost.UseKestrel(k =>
+    {
+        var appServices = k.ApplicationServices;
+        k.Listen(
+            IPAddress.Any, 443, listenOptions =>
+                listenOptions.UseHttps(h =>
+                {
+                    h.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
+                    h.UseLettuceEncrypt(appServices);
+                }));
 
-builder.WebHost.UseKestrel(k =>
-{
-    var appServices = k.ApplicationServices;
-    k.Listen(
-        IPAddress.Any, 443, listenOptions =>
-            listenOptions.UseHttps(h =>
-            {
-                h.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
-                h.UseLettuceEncrypt(appServices);
-            }));
+    });
+}
 
-});
 
 
 
@@ -82,10 +95,15 @@ app.UseStaticFiles();
 app.UseRouting();
 
 app.MapBlazorHub();
+
 app.MapFallbackToPage("/_Host");
 
 app.MapControllers();
 
 app.MapReverseProxy();
 
+
+
+
 app.Run();
+
