@@ -10,7 +10,8 @@ Adjust volume with settings to wherever json config files are. Logs are going to
 
 ## Config files saved in the config volume:
 - ReverseProxy.json
-- Auth.json
+- auth.json
+- cert.json
 
 ### ReverseProxy.json config file:
 This is the config file for YARP. this is a simple example:
@@ -36,6 +37,24 @@ This is the config file for YARP. this is a simple example:
       }
     }
   }
+}
+```
+
+### cert.json
+```
+{
+  "LettuceEncrypt": {
+    // Set this to automatically accept the terms of service of your certificate authority.
+    // If you don't set this in config, you will need to press "y" whenever the application starts
+    "AcceptTermsOfService": true,
+
+    // You must specify at least one domain name
+    "DomainNames": [ "example.duckdns.org", "www.example.duckdns.org", "*.example.duckdns.org" ],
+
+    // You must specify an email address to register with the certificate authority
+    "EmailAddress": "some@mail.com"
+  },
+  "pfxPassword": "somepassword"
 }
 ```
 
