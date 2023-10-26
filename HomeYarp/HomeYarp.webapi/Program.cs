@@ -45,15 +45,15 @@ builder.Services.AddReverseProxy()
 builder.Services.AddHttpForwarder();
 
 
-//if(builder.Environment.IsDevelopment())
-//{
-//    builder.WebHost.UseKestrel(k =>
-//    {
-//        k.Listen(IPAddress.Any,443);
-//    });
-//}
-//else
-//{
+if (builder.Environment.IsDevelopment())
+{
+    builder.WebHost.UseKestrel(k =>
+    {
+        k.Listen(IPAddress.Any, 443);
+    });
+}
+else
+{
     // Lets encrypt and certificate only when deployed
     builder.Services
     .AddLettuceEncrypt()
@@ -71,7 +71,7 @@ builder.Services.AddHttpForwarder();
                 }));
 
     });
-//}
+}
 
 
 
