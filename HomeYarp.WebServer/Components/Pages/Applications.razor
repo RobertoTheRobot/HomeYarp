@@ -1,0 +1,80 @@
+@page "/applications"
+@inject IApplicationService Service
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>Applications · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>Applications</h1>
+    <a class="btn primary" href="applications/new">+ New application</a>
+</div>
+
+@if (_apps is null)
+{
+    <p>Loading…</p>
+}
+else if (_apps.Count == 0)
+{
+    <p class="empty">No applications yet. Create one to start proxying traffic.</p>
+}
+else
+{
+    <table class="data">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Hosts</th>
+                <th>Destinations</th>
+                <th>Enabled</th>
+                <th class="actions"></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var app in _apps)
+            {
+                <tr>
+                    <td>
+                        <strong>@app.Name</strong>
+                        @if (!string.IsNullOrWhiteSpace(app.DisplayName))
+                        {
+                            <div class="muted">@app.DisplayName</div>
+                        }
+                    </td>
+                    <td>@string.Join(", ", app.Routes.SelectMany(r => r.Hosts).Distinct())</td>
+                    <td>
+                        @foreach (var d in app.Cluster.Destinations)
+                        {
+                            <div><code>@d.Address</code></div>
+                        }
+                    </td>
+                    <td>@(app.Enabled ? "yes" : "no")</td>
+                    <td class="actions">
+                        <a class="btn" href="@($"applications/{app.Id}")">Edit</a>
+                        <button class="btn danger" @onclick="() => DeleteAsync(app)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<HomeYarp.Domain.Application>? _apps;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        _apps = await Service.ListAsync();
+    }
+
+    private async Task DeleteAsync(HomeYarp.Domain.Application app)
+    {
+        await Service.DeleteAsync(app.Id);
+        await Reload();
+    }
+}

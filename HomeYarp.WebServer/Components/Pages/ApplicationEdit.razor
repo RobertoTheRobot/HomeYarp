@@ -1,0 +1,244 @@
+@page "/applications/new"
+@page "/applications/{Id:guid}"
+@inject IApplicationService Service
+@inject ICertificateService CertificateService
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>@(_isNew ? "New application" : _model.Name) · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>@(_isNew ? "New application" : $"Edit {_model.Name}")</h1>
+    <a class="btn" href="applications">Back</a>
+</div>
+
+@if (_loading)
+{
+    <p>Loading…</p>
+}
+else if (_notFound)
+{
+    <p class="empty">Application not found.</p>
+}
+else
+{
+    <EditForm Model="_model" OnValidSubmit="SaveAsync" FormName="application-edit">
+        <fieldset>
+            <legend>Identity</legend>
+            <label>
+                Name (slug)
+                <input class="input" @bind="_model.Name" required />
+            </label>
+            <label>
+                Display name
+                <input class="input" @bind="_model.DisplayName" />
+            </label>
+            <label>
+                Description
+                <textarea class="input" rows="2" @bind="_model.Description"></textarea>
+            </label>
+            <label class="checkbox">
+                <input type="checkbox" @bind="_model.Enabled" />
+                Enabled
+            </label>
+            <label>
+                Authorization policy (optional)
+                <input class="input" @bind="_model.AuthorizationPolicy" />
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Routes</legend>
+            @for (var i = 0; i < _model.Routes.Count; i++)
+            {
+                var route = _model.Routes[i];
+                var index = i;
+                <div class="row">
+                    <label>
+                        Hosts (comma separated)
+                        <input class="input" value="@string.Join(", ", route.Hosts)"
+                               @onchange="e => UpdateHosts(index, e.Value?.ToString())" />
+                    </label>
+                    <label>
+                        Path
+                        <input class="input" @bind="route.Path" placeholder="/{**catch-all}" />
+                    </label>
+                    <label>
+                        Order
+                        <input class="input narrow" type="number" @bind="route.Order" />
+                    </label>
+                    <button type="button" class="btn danger" @onclick="() => _model.Routes.RemoveAt(index)">Remove</button>
+                </div>
+            }
+            <button type="button" class="btn" @onclick="AddRoute">+ Add route</button>
+        </fieldset>
+
+        <fieldset>
+            <legend>TLS</legend>
+            <label>
+                Mode
+                <select class="input" @bind="_model.Tls.Mode">
+                    <option value="@TlsMode.None">None (HTTP only)</option>
+                    <option value="@TlsMode.Offload">Offload (proxy terminates TLS)</option>
+                    <option value="@TlsMode.Passthrough">Passthrough (raw TCP tunnel)</option>
+                </select>
+            </label>
+            @if (_model.Tls.Mode == TlsMode.Offload)
+            {
+                <label>
+                    Certificate
+                    <select class="input" @bind="_model.Tls.CertificateId">
+                        <option value="">-- select a certificate --</option>
+                        @foreach (var cert in _certificates)
+                        {
+                            <option value="@cert.Id">@cert.Name (@cert.NotAfter.ToString("yyyy-MM-dd"))</option>
+                        }
+                    </select>
+                </label>
+                @if (_certificates.Count == 0)
+                {
+                    <p class="muted">No certificates yet — <a href="certificates/upload">upload one</a> first.</p>
+                }
+            }
+            else if (_model.Tls.Mode == TlsMode.Passthrough)
+            {
+                <p class="muted">Passthrough forwards encrypted bytes to the first destination. The backend must terminate TLS itself. Reachable on the passthrough port (default :5444).</p>
+            }
+        </fieldset>
+
+        <fieldset>
+            <legend>Cluster</legend>
+            <label>
+                Load balancing policy (optional)
+                <input class="input" @bind="_model.Cluster.LoadBalancingPolicy" placeholder="RoundRobin" />
+            </label>
+            <h3>Destinations</h3>
+            @for (var i = 0; i < _model.Cluster.Destinations.Count; i++)
+            {
+                var dest = _model.Cluster.Destinations[i];
+                var index = i;
+                <div class="row">
+                    <label>
+                        Name
+                        <input class="input" @bind="dest.Name" required />
+                    </label>
+                    <label>
+                        Address
+                        <input class="input wide" @bind="dest.Address" placeholder="https://example.com" required />
+                    </label>
+                    <label>
+                        Host header (optional)
+                        <input class="input" @bind="dest.Host" />
+                    </label>
+                    <button type="button" class="btn danger" @onclick="() => _model.Cluster.Destinations.RemoveAt(index)">Remove</button>
+                </div>
+            }
+            <button type="button" class="btn" @onclick="AddDestination">+ Add destination</button>
+        </fieldset>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="error">@_error</div>
+        }
+
+        <div class="form-actions">
+            <button type="submit" class="btn primary" disabled="@_saving">@(_saving ? "Saving…" : "Save")</button>
+        </div>
+    </EditForm>
+}
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private HomeYarp.Domain.Application _model = NewModel();
+    private IReadOnlyList<HomeYarp.Domain.Certificate> _certificates = Array.Empty<HomeYarp.Domain.Certificate>();
+    private bool _isNew = true;
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _saving;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _isNew = !Id.HasValue;
+        _loading = true;
+        _notFound = false;
+        _error = null;
+
+        _certificates = await CertificateService.ListAsync();
+
+        if (_isNew)
+        {
+            _model = NewModel();
+        }
+        else
+        {
+            var existing = await Service.GetAsync(Id!.Value);
+            if (existing is null)
+            {
+                _notFound = true;
+            }
+            else
+            {
+                _model = existing;
+            }
+        }
+
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            if (_isNew)
+            {
+                await Service.CreateAsync(_model);
+            }
+            else
+            {
+                await Service.UpdateAsync(Id!.Value, _model);
+            }
+            Nav.NavigateTo("applications");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void AddRoute() => _model.Routes.Add(new RouteDefinition { Hosts = new List<string>() });
+
+    private void AddDestination() => _model.Cluster.Destinations.Add(new DestinationDefinition
+    {
+        Name = $"dest-{_model.Cluster.Destinations.Count + 1}",
+        Address = "https://"
+    });
+
+    private void UpdateHosts(int index, string? raw)
+    {
+        var hosts = string.IsNullOrWhiteSpace(raw)
+            ? new List<string>()
+            : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        _model.Routes[index].Hosts = hosts;
+    }
+
+    private static HomeYarp.Domain.Application NewModel() => new()
+    {
+        Name = string.Empty,
+        Routes = new List<RouteDefinition> { new() { Hosts = new List<string>() } },
+        Cluster = new ClusterDefinition
+        {
+            Destinations = new List<DestinationDefinition>
+            {
+                new() { Name = "primary", Address = "https://" }
+            }
+        }
+    };
+}

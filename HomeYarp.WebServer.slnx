@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="HomeYarp.Domain/HomeYarp.Domain.csproj" />
+  <Project Path="HomeYarp.Application/HomeYarp.Application.csproj" />
+  <Project Path="HomeYarp.Persistance/HomeYarp.Persistance.csproj" />
+  <Project Path="HomeYarp.WebServer/HomeYarp.WebServer.csproj" />
+</Solution>

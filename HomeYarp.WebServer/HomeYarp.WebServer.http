@@ -1,0 +1,31 @@
+@HomeYarp.WebServer_HostAddress = http://localhost:5268
+
+### List applications
+GET {{HomeYarp.WebServer_HostAddress}}/api/applications
+Accept: application/json
+
+### Create an application (proxies echo.localhost -> postman-echo.com)
+POST {{HomeYarp.WebServer_HostAddress}}/api/applications
+Content-Type: application/json
+
+{
+  "name": "echo",
+  "displayName": "Echo Test",
+  "description": "Forwards echo.localhost to postman-echo.com",
+  "enabled": true,
+  "routes": [
+    {
+      "hosts": ["echo.localhost"],
+      "path": "/{**catch-all}"
+    }
+  ],
+  "cluster": {
+    "destinations": [
+      { "name": "primary", "address": "https://postman-echo.com" }
+    ]
+  }
+}
+
+### Proxy through YARP using the configured host header
+GET {{HomeYarp.WebServer_HostAddress}}/get
+Host: echo.localhost

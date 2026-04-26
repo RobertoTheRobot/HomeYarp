@@ -1,0 +1,51 @@
+@page "/settings"
+@using Microsoft.Extensions.Options
+@using HomeYarp.Persistance.Json
+@inject IOptions<JsonStoreOptions> StorageOptions
+@inject IApplicationService Service
+@rendermode InteractiveServer
+
+<PageTitle>Settings · HomeYarp</PageTitle>
+
+<h1>Settings</h1>
+
+<section>
+    <h2>Storage</h2>
+    <dl class="kv">
+        <dt>Data root</dt>
+        <dd><code>@StorageOptions.Value.DataRoot</code></dd>
+        <dt>Resolved path</dt>
+        <dd><code>@_resolvedPath</code></dd>
+    </dl>
+    <p class="muted">Configured via <code>HomeYarp:Storage:DataRoot</code>. Changes require a restart.</p>
+</section>
+
+<section>
+    <h2>Runtime</h2>
+    <dl class="kv">
+        <dt>Applications</dt>
+        <dd>@_appCount total · @_enabledCount enabled</dd>
+        <dt>Destinations</dt>
+        <dd>@_destinationCount across enabled apps</dd>
+    </dl>
+</section>
+
+@code {
+    private string _resolvedPath = string.Empty;
+    private int _appCount;
+    private int _enabledCount;
+    private int _destinationCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var root = StorageOptions.Value.DataRoot;
+        _resolvedPath = Path.IsPathRooted(root)
+            ? Path.Combine(root, "applications")
+            : Path.Combine(AppContext.BaseDirectory, root, "applications");
+
+        var apps = await Service.ListAsync();
+        _appCount = apps.Count;
+        _enabledCount = apps.Count(a => a.Enabled);
+        _destinationCount = apps.Where(a => a.Enabled).Sum(a => a.Cluster.Destinations.Count);
+    }
+}

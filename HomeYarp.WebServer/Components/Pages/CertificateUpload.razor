@@ -1,0 +1,76 @@
+@page "/certificates/upload"
+@using HomeYarp.Application.Abstractions
+@inject ICertificateService Service
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>Upload certificate · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>Upload certificate</h1>
+    <a class="btn" href="certificates">Back</a>
+</div>
+
+<EditForm Model="this" OnValidSubmit="UploadAsync" FormName="cert-upload">
+    <fieldset>
+        <legend>Identity</legend>
+        <label>
+            Name (slug)
+            <input class="input" @bind="_name" required />
+        </label>
+        <label>
+            Friendly name
+            <input class="input" @bind="_friendlyName" />
+        </label>
+    </fieldset>
+
+    <fieldset>
+        <legend>PEM material</legend>
+        <label>
+            Certificate (PEM)
+            <textarea class="input" rows="10" @bind="_certPem" placeholder="-----BEGIN CERTIFICATE-----…" required></textarea>
+        </label>
+        <label>
+            Private key (PEM)
+            <textarea class="input" rows="10" @bind="_keyPem" placeholder="-----BEGIN PRIVATE KEY-----…" required></textarea>
+        </label>
+    </fieldset>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="error">@_error</div>
+    }
+
+    <div class="form-actions">
+        <button type="submit" class="btn primary" disabled="@_uploading">@(_uploading ? "Uploading…" : "Upload")</button>
+    </div>
+</EditForm>
+
+@code {
+    private string _name = string.Empty;
+    private string _friendlyName = string.Empty;
+    private string _certPem = string.Empty;
+    private string _keyPem = string.Empty;
+    private bool _uploading;
+    private string? _error;
+
+    private async Task UploadAsync()
+    {
+        _error = null;
+        _uploading = true;
+        try
+        {
+            var material = new CertificateMaterial(_certPem, _keyPem);
+            await Service.UploadAsync(_name, string.IsNullOrWhiteSpace(_friendlyName) ? null : _friendlyName, material);
+            Nav.NavigateTo("certificates");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _uploading = false;
+        }
+    }
+}

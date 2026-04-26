@@ -1,0 +1,78 @@
+@page "/certificates"
+@inject ICertificateService Service
+@rendermode InteractiveServer
+
+<PageTitle>Certificates · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>Certificates</h1>
+    <a class="btn primary" href="certificates/upload">+ Upload</a>
+</div>
+
+@if (_certs is null)
+{
+    <p>Loading…</p>
+}
+else if (_certs.Count == 0)
+{
+    <p class="empty">No certificates yet. Upload one to enable TLS offload.</p>
+}
+else
+{
+    <table class="data">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Subject</th>
+                <th>SANs</th>
+                <th>Expires</th>
+                <th class="actions"></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var cert in _certs)
+            {
+                <tr>
+                    <td>
+                        <strong>@cert.Name</strong>
+                        @if (!string.IsNullOrWhiteSpace(cert.FriendlyName))
+                        {
+                            <div class="muted">@cert.FriendlyName</div>
+                        }
+                    </td>
+                    <td><code>@cert.Subject</code></td>
+                    <td>
+                        @foreach (var san in cert.SubjectAlternativeNames)
+                        {
+                            <div><code>@san</code></div>
+                        }
+                    </td>
+                    <td>
+                        @cert.NotAfter.ToString("yyyy-MM-dd")
+                        @if (cert.NotAfter < DateTimeOffset.UtcNow)
+                        {
+                            <span class="muted"> (expired)</span>
+                        }
+                    </td>
+                    <td class="actions">
+                        <button class="btn danger" @onclick="() => DeleteAsync(cert)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<HomeYarp.Domain.Certificate>? _certs;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload() => _certs = await Service.ListAsync();
+
+    private async Task DeleteAsync(HomeYarp.Domain.Certificate cert)
+    {
+        await Service.DeleteAsync(cert.Id);
+        await Reload();
+    }
+}

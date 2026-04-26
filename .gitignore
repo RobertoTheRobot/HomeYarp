@@ -396,3 +396,10 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# HomeYarp local data store
+HomeYarp.WebServer/data/
+
+# Claude Code local settings
+.claude/settings.local.json
+
