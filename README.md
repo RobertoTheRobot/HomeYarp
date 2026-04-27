@@ -11,7 +11,11 @@ A YARP-based reverse proxy with a built-in REST API and Blazor UI for managing a
 - Supports two per-application TLS modes:
   - **Offload** — proxy terminates TLS at its HTTPS port using a per-app cert, then forwards plain HTTP to the backend.
   - **Passthrough** — proxy peeks the TLS ClientHello SNI, opens a raw TCP socket to the backend, and bidirectionally pumps bytes. The proxy never decrypts; the backend terminates TLS itself.
-- **Issues and renews certificates from Let's Encrypt** automatically over the ACME HTTP-01 challenge. A daily background worker renews any cert whose expiry is within the configured threshold; the SNI cache hot-swaps with no restart.
+- **Three certificate sources**, all interchangeable from the proxy's point of view:
+  - **Manual** — paste a PEM cert + key (or POST one).
+  - **Self-signed** — HomeYarp generates a key and self-signs for the requested hostnames. Wildcards and IP SANs supported. Use for internal-only services.
+  - **Let's Encrypt** — issued and auto-renewed via ACME HTTP-01. A daily background worker renews any cert within the configured expiry threshold.
+- **One-step TLS via per-app `Internal` / `External` toggle.** Pick `Internal` and HomeYarp self-signs for the route hostnames. Pick `External` and HomeYarp orders from Let's Encrypt. The cert's lifecycle is tied to the app — created on save, regenerated when hostnames change, deleted when the app is deleted.
 
 ## Requirements
 
@@ -38,8 +42,9 @@ OpenAPI docs are exposed at `http://localhost:5268/openapi/v1.json` in Developme
 
 - `/` — landing page
 - `/applications` — list, create, edit, delete proxied apps
-- `/certificates` — list, upload, delete; manually trigger ACME renewal
+- `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration
 - `/certificates/upload` — paste a PEM cert + key
+- `/certificates/generate` — generate a self-signed certificate
 - `/certificates/request` — request a fresh certificate from Let's Encrypt
 - `/settings` — read-only view of storage, runtime info, and ACME state
 
@@ -70,26 +75,109 @@ The proxy is now reachable at the HTTP listener. Setting your local DNS or a `Ho
 
 ### Offload (proxy terminates TLS)
 
-1. Get a certificate. Either:
-   - **Request one from Let's Encrypt** (recommended for public hosts) — see [Let's Encrypt automation](#lets-encrypt-automation) below.
-   - **Upload an existing PEM pair** via the UI (`/certificates/upload`) or:
+The application's `tls` block selects a **mode** (how TLS is handled at the listener) and a **certificate source** (where the cert comes from):
 
-     ```bash
-     curl -X POST http://localhost:5268/api/certificates \
-       -H 'Content-Type: application/json' \
-       -d "$(jq -n --rawfile cert ./fullchain.pem --rawfile key ./privkey.pem \
-              '{name:"home-lan", friendlyName:"*.home.lan", certificatePem:$cert, privateKeyPem:$key}')"
-     ```
+```json
+"tls": { "mode": 1, "source": 1 }                                  // Offload, Internal (self-signed)
+"tls": { "mode": 1, "source": 2 }                                  // Offload, External (Let's Encrypt)
+"tls": { "mode": 1, "source": 0, "certificateId": "<existing>" }   // Offload, Manual (existing cert)
+"tls": { "mode": 2 }                                               // Passthrough
+```
 
-2. Bind the certificate to an application by setting `tls.mode = 1` (Offload) and `tls.certificateId = <cert-id>`.
+`source`: `0` = Manual (default), `1` = Internal, `2` = External. For Internal and External, HomeYarp creates the cert on save using the route hostnames as SANs, regenerates it on hostname change, and deletes it when the app is deleted. `certificateId` is populated automatically.
 
-3. The application is now reachable on the offload port (default `5443`). HomeYarp uses the certificate matching the SNI hostname; both exact (`grafana.home.lan`) and wildcard (`*.home.lan`) entries are supported.
+#### One-step path: Internal (self-signed)
+
+For internal-only services that aren't reachable from the public internet:
+
+```bash
+curl -X POST http://localhost:5268/api/applications \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "home-assistant",
+    "routes": [{ "hosts": ["ha.home.lan"], "path": "/{**catch-all}" }],
+    "cluster": { "destinations": [{ "name": "primary", "address": "http://192.168.1.50:8123" }] },
+    "tls": { "mode": 1, "source": 1 }
+  }'
+```
+
+HomeYarp self-signs a cert named `home-assistant-internal` covering `ha.home.lan`, binds it to the app, and serves it on `:5443`. Clients need to trust HomeYarp's cert (or be told to ignore the warning) since it isn't issued by a public CA.
+
+#### One-step path: External (Let's Encrypt)
+
+For publicly-reachable services with port-80 ingress and DNS resolving to your server. ACME must be configured first — see [Let's Encrypt automation](#lets-encrypt-automation).
+
+```json
+"tls": { "mode": 1, "source": 2 }
+```
+
+Save the application. HomeYarp orders a cert from Let's Encrypt over HTTP-01 using the route hostnames and binds it. The daily renewal worker keeps it fresh.
+
+#### Manual (pick an existing cert)
+
+Useful when one cert (e.g. a wildcard) serves many apps:
+
+1. Get a certificate by uploading PEM material, generating self-signed, or requesting from Let's Encrypt independently. Examples:
+
+   ```bash
+   # Upload existing PEM
+   curl -X POST http://localhost:5268/api/certificates \
+     -H 'Content-Type: application/json' \
+     -d "$(jq -n --rawfile cert ./fullchain.pem --rawfile key ./privkey.pem \
+            '{name:"home-lan", friendlyName:"*.home.lan", certificatePem:$cert, privateKeyPem:$key}')"
+
+   # Generate self-signed
+   curl -X POST http://localhost:5268/api/certificates/self-signed \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"home-lan-wildcard","hostnames":["*.home.lan"],"keyType":0,"validityDays":365}'
+   ```
+
+2. Bind by setting `tls.mode = 1`, `tls.source = 0`, and `tls.certificateId = <cert-id>`.
+
+3. The app is reachable on the offload port (default `5443`). HomeYarp picks the cert by SNI; exact and wildcard hostnames are both supported.
 
 ### Passthrough (backend terminates TLS)
 
 Set `tls.mode = 2` (Passthrough). The application is reachable on the passthrough port (default `5444`). HomeYarp peeks the SNI from the TLS ClientHello, opens a TCP socket to the first destination's host:port, replays the buffered bytes, and pipes both directions. The certificate field is unused — the backend presents its own certificate to the client.
 
 This is useful for backends that already have their own valid certificates (e.g. Home Assistant, Synology DSM, anything with an embedded TLS stack you don't want to terminate at the edge).
+
+## Self-signed certificates
+
+For internal-only services where Let's Encrypt won't work (no public DNS, no port-80 ingress, RFC1918 hostnames, IP-only services), HomeYarp can generate a self-signed cert itself. No external dependencies, no NuGet beyond the BCL.
+
+The simplest path is per-application via `tls.source = 1` (see [Enabling TLS](#enabling-tls) above). To generate a cert independently of any application — useful when one cert covers many apps — use:
+
+### Via the UI
+
+`/certificates` → **+ Generate self-signed** → fill in name + hostnames (one per line) + validity + key type → submit. Wildcards (`*.home.lan`) and IP addresses are both accepted.
+
+### Via the API
+
+```bash
+curl -X POST http://localhost:5268/api/certificates/self-signed \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "home-assistant-internal",
+    "friendlyName": "Home Assistant (internal)",
+    "hostnames": ["ha.home.lan", "192.168.1.50", "*.lab.home.lan"],
+    "keyType": 0,
+    "validityDays": 365
+  }'
+```
+
+`keyType`: `0` = EC P-256 (default, recommended), `1` = RSA 2048. `validityDays` defaults to `365`. DNS hostnames go into the SAN as `DNS:` entries; entries that parse as `IPAddress` go in as `IP Address:` entries.
+
+### Regenerate
+
+Self-signed certs aren't auto-renewed (there's no expiry coordination — only the user knows when to rotate). To regenerate in place (same id, fresh key, fresh expiry):
+
+- UI: `/certificates` → **Regenerate** on any self-signed cert.
+- API: `POST /api/certificates/{id}/regenerate`.
+
+The SNI cache hot-swaps the new key as soon as the regenerated material lands on disk — clients just see a new cert on their next handshake.
+
+> **Heads up:** clients need to trust the cert (import into the OS/browser trust store, or accept the warning). Self-signed is fine for internal use; it's not a substitute for a publicly-rooted CA.
 
 ## Let's Encrypt automation
 
@@ -237,8 +325,8 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
                   └────►  HomeYarp.Persistance  ──►  HomeYarp.Domain
 ```
 
-- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `AcmeKeyType`.
-- `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), and ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`).
+- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`.
+- `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
 - `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
 - `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, and the `/.well-known/acme-challenge/{token}` endpoint.
 
@@ -249,7 +337,9 @@ See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifet
 - **Private keys are stored unencrypted on disk** (including the ACME account key). Acceptable for a home lab; encryption at rest is a planned follow-up.
 - **No authentication on the management API or UI.** Run it on a trusted network only. Auth on top of the management surface is also a planned follow-up.
 - **`AuthorizationPolicy` on `Application` is a placeholder field.** Per-route ASP.NET Core authorization policies are not wired yet.
-- **ACME supports HTTP-01 only.** No DNS-01, so wildcard certificates can't be issued. ACME options are read once at startup — editing `appsettings.json` requires a restart.
+- **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for self-signed wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
+- **Hostname changes on `External`-managed apps are rejected.** v1 only re-issues with the original hostnames; to change them, switch to `Manual` (or `Internal`), or delete and recreate. Self-signed (`Internal`) regenerates in place on hostname change.
+- **Self-signed certs are not auto-rotated.** Regeneration is a manual user action (UI button or `POST /api/certificates/{id}/regenerate`).
 - **No automated tests.** Verification is currently manual via the `.http` file and the smoke flow described above.
 - **Offload and passthrough must live on different ports.** Kestrel cannot host both an HTTPS-terminating endpoint and a raw-TCP `ConnectionHandler` on the same listener. If single-port unified TLS routing matters to you, that's a future design topic.
 

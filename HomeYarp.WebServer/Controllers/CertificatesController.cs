@@ -1,6 +1,8 @@
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Application.Acme;
+using HomeYarp.Application.SelfSigned;
 using HomeYarp.Application.Services;
+using HomeYarp.Domain;
 using HomeYarp.WebServer.Dtos;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,11 +14,16 @@ public sealed class CertificatesController : ControllerBase
 {
     private readonly ICertificateService _service;
     private readonly IAcmeService _acme;
+    private readonly ISelfSignedCertificateService _selfSigned;
 
-    public CertificatesController(ICertificateService service, IAcmeService acme)
+    public CertificatesController(
+        ICertificateService service,
+        IAcmeService acme,
+        ISelfSignedCertificateService selfSigned)
     {
         _service = service;
         _acme = acme;
+        _selfSigned = selfSigned;
     }
 
     [HttpGet]
@@ -63,6 +70,48 @@ public sealed class CertificatesController : ControllerBase
         catch (ArgumentException ex)
         {
             return ValidationProblem(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("self-signed")]
+    public async Task<ActionResult<CertificateResponse>> IssueSelfSigned([FromBody] SelfSignedIssueRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var created = await _selfSigned.IssueAsync(
+                request.Name,
+                request.FriendlyName,
+                request.Hostnames ?? Array.Empty<string>(),
+                request.KeyType ?? CertificateKeyType.Ec256,
+                request.ValidityDays ?? 365,
+                cancellationToken);
+            return CreatedAtAction(nameof(Get), new { id = created.Id }, CertificateDtoMapper.ToResponse(created));
+        }
+        catch (ArgumentException ex)
+        {
+            return ValidationProblem(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id:guid}/regenerate")]
+    public async Task<ActionResult<CertificateResponse>> Regenerate(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var regenerated = await _selfSigned.RegenerateAsync(id, cancellationToken);
+            return Ok(CertificateDtoMapper.ToResponse(regenerated));
+        }
+        catch (ArgumentException ex)
+        {
+            return NotFound(new { message = ex.Message });
         }
         catch (InvalidOperationException ex)
         {

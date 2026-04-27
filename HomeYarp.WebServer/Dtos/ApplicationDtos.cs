@@ -43,7 +43,8 @@ public sealed record DestinationDto(
 
 public sealed record TlsDto(
     TlsMode Mode,
-    Guid? CertificateId);
+    Guid? CertificateId,
+    TlsCertificateSource? Source);
 
 public static class ApplicationDtoMapper
 {
@@ -57,7 +58,7 @@ public static class ApplicationDtoMapper
         new ClusterDto(
             app.Cluster.LoadBalancingPolicy,
             app.Cluster.Destinations.Select(d => new DestinationDto(d.Name, d.Address, d.Host)).ToList()),
-        new TlsDto(app.Tls.Mode, app.Tls.CertificateId),
+        new TlsDto(app.Tls.Mode, app.Tls.CertificateId, app.Tls.Source),
         app.AuthorizationPolicy,
         app.CreatedAt,
         app.UpdatedAt);
@@ -89,7 +90,8 @@ public static class ApplicationDtoMapper
         Tls = new TlsConfiguration
         {
             Mode = request.Tls?.Mode ?? TlsMode.None,
-            CertificateId = request.Tls?.CertificateId
+            CertificateId = request.Tls?.CertificateId,
+            Source = request.Tls?.Source ?? TlsCertificateSource.Manual
         },
         AuthorizationPolicy = request.AuthorizationPolicy
     };

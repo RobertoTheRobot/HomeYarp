@@ -1,7 +1,9 @@
 @page "/certificates"
 @using HomeYarp.Application.Acme
+@using HomeYarp.Application.SelfSigned
 @inject ICertificateService Service
 @inject IAcmeService Acme
+@inject ISelfSignedCertificateService SelfSigned
 @rendermode InteractiveServer
 
 <PageTitle>Certificates · HomeYarp</PageTitle>
@@ -9,6 +11,7 @@
 <div class="page-header">
     <h1>Certificates</h1>
     <div>
+        <a class="btn" href="certificates/generate">+ Generate self-signed</a>
         <a class="btn" href="certificates/request">+ Request via Let's Encrypt</a>
         <a class="btn primary" href="certificates/upload">+ Upload PEM</a>
     </div>
@@ -71,6 +74,18 @@ else
                                 <div class="muted">issued @cert.Acme.IssuedAt.ToString("yyyy-MM-dd")</div>
                             }
                         }
+                        else if (cert.SelfSigned is not null)
+                        {
+                            <span class="badge">Self-signed</span>
+                            @if (cert.SelfSigned.RegeneratedAt is { } regen)
+                            {
+                                <div class="muted">regenerated @regen.ToString("yyyy-MM-dd")</div>
+                            }
+                            else
+                            {
+                                <div class="muted">issued @cert.SelfSigned.IssuedAt.ToString("yyyy-MM-dd")</div>
+                            }
+                        }
                         else
                         {
                             <span class="muted">manual</span>
@@ -90,6 +105,14 @@ else
                                     disabled="@(_busyId == cert.Id)"
                                     @onclick="() => RenewAsync(cert)">
                                 @(_busyId == cert.Id ? "Renewing…" : "Renew now")
+                            </button>
+                        }
+                        else if (cert.SelfSigned is not null)
+                        {
+                            <button class="btn"
+                                    disabled="@(_busyId == cert.Id)"
+                                    @onclick="() => RegenerateAsync(cert)">
+                                @(_busyId == cert.Id ? "Regenerating…" : "Regenerate")
                             </button>
                         }
                         <button class="btn danger" @onclick="() => DeleteAsync(cert)">Delete</button>
@@ -131,6 +154,25 @@ else
         catch (Exception ex)
         {
             _error = $"Renewal failed: {ex.Message}";
+        }
+        finally
+        {
+            _busyId = null;
+        }
+    }
+
+    private async Task RegenerateAsync(HomeYarp.Domain.Certificate cert)
+    {
+        _busyId = cert.Id;
+        _error = null;
+        try
+        {
+            await SelfSigned.RegenerateAsync(cert.Id);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Regeneration failed: {ex.Message}";
         }
         finally
         {

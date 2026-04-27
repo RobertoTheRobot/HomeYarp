@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-HomeYarp is a YARP-based reverse proxy for a home lab. The `HomeYarp.WebServer` project hosts the proxy (via `MapReverseProxy()`), a REST management API at `/api/applications` + `/api/certificates`, and a Blazor Server UI for managing apps, certificates, and settings — all in one process. Application definitions and certificates are persisted as JSON + PEM files on disk; a custom `IProxyConfigProvider` translates them to YARP `RouteConfig`/`ClusterConfig` and hot-reloads via `IChangeToken` whenever state changes. TLS is supported per-application: offload (proxy terminates) or true L4 passthrough (raw TCP tunnel via SNI peek).
+HomeYarp is a YARP-based reverse proxy for a home lab. The `HomeYarp.WebServer` project hosts the proxy (via `MapReverseProxy()`), a REST management API at `/api/applications` + `/api/certificates`, and a Blazor Server UI for managing apps, certificates, and settings — all in one process. Application definitions and certificates are persisted as JSON + PEM files on disk; a custom `IProxyConfigProvider` translates them to YARP `RouteConfig`/`ClusterConfig` and hot-reloads via `IChangeToken` whenever state changes. TLS is supported per-application: offload (proxy terminates) or true L4 passthrough (raw TCP tunnel via SNI peek). Certificates have three sources — manual upload, self-signed (HomeYarp generates), and ACME (Let's Encrypt) — and the application's `Tls.Source` toggle (`Manual | Internal | External`) lets the app service own the cert lifecycle automatically.
 
 ## Commands
 
@@ -28,8 +28,8 @@ OpenAPI docs are available at `/openapi` in Development mode. Sample HTTP reques
 
 Clean Architecture targeting .NET 10, four projects:
 
-- **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate`. Plus `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration`, and the `TlsMode` enum (`None | Offload | Passthrough`). No dependencies.
-- **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` and `CertificateService`, `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), and the `Tls/` namespace: `SniCertificateSelector` (the cert callback Kestrel invokes during HTTPS handshake), `TlsPassthroughConnectionHandler` (a Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes to a backend), and `TlsClientHelloParser`. References `Yarp.ReverseProxy`. Depends on Domain only.
+- **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
+- **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` (now also owns auto-managed cert lifecycle for Internal/External sources) and `CertificateService`, `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), the `Tls/` namespace (`SniCertificateSelector` — cert callback Kestrel invokes during HTTPS handshake; `TlsPassthroughConnectionHandler` — Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes; `TlsClientHelloParser`), the `Acme/` namespace (`AcmeService`, `AcmeRenewalService`, `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeOptionsValidator`), and the `SelfSigned/` namespace (`ISelfSignedCertificateService`, `SelfSignedCertificateService`). References `Yarp.ReverseProxy`. Depends on Domain only.
 - **HomeYarp.Persistance** — `JsonApplicationRepository` stores one file per app at `{DataRoot}/applications/{id}.json` with atomic temp-file rename writes and an in-memory cache. `JsonCertificateRepository` mirrors that pattern with `{DataRoot}/certificates/{id}.json` (manifest) + `{id}.cert.pem` + `{id}.key.pem`. `HomeYarpDbContext` is a thin façade exposing both repos. `JsonStoreOptions` is bound from `HomeYarp:Storage`. Depends on Application + Domain.
 - **HomeYarp.WebServer** — Composition root. `Program.cs` calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`.
 
@@ -37,7 +37,7 @@ Blazor surface (interactive server, no separate WASM project):
 - `Components/App.razor` — root document, references `app.css` and `_framework/blazor.web.js`.
 - `Components/Routes.razor` — router with `MainLayout` as default.
 - `Components/Layout/{MainLayout,NavMenu}.razor` — shell + sidebar.
-- `Components/Pages/Home.razor` (`/`), `Applications.razor` (`/applications`), `ApplicationEdit.razor` (`/applications/new` and `/applications/{Id:guid}`), `Certificates.razor` (`/certificates`), `CertificateUpload.razor` (`/certificates/upload`), `Settings.razor` (`/settings`).
+- `Components/Pages/Home.razor` (`/`), `Applications.razor` (`/applications`), `ApplicationEdit.razor` (`/applications/new` and `/applications/{Id:guid}`), `Certificates.razor` (`/certificates`), `CertificateUpload.razor` (`/certificates/upload`), `CertificateGenerate.razor` (`/certificates/generate`), `CertificateRequest.razor` (`/certificates/request`), `Settings.razor` (`/settings`).
 - Pages inject `IApplicationService` / `ICertificateService` directly — UI mutations flow through the same path as the controllers, so the repos' change tokens fire and YARP/the SNI selector rebuild without restart.
 - Static assets live under `wwwroot/` (currently `app.css`).
 
@@ -46,17 +46,23 @@ Dependency flow: `WebServer → Application/Persistance → Domain`. The solutio
 ## REST API surface
 
 ```
-GET    /api/applications           → ApplicationResponse[]
-GET    /api/applications/{id}      → ApplicationResponse | 404
-POST   /api/applications           → 201 + ApplicationResponse | 400 | 409
-PUT    /api/applications/{id}      → 200 + ApplicationResponse | 404 | 400 | 409
-DELETE /api/applications/{id}      → 204 | 404
+GET    /api/applications                       → ApplicationResponse[]
+GET    /api/applications/{id}                  → ApplicationResponse | 404
+POST   /api/applications                       → 201 + ApplicationResponse | 400 | 409
+PUT    /api/applications/{id}                  → 200 + ApplicationResponse | 404 | 400 | 409
+DELETE /api/applications/{id}                  → 204 | 404
 
-GET    /api/certificates           → CertificateResponse[]
-GET    /api/certificates/{id}      → CertificateResponse | 404
-POST   /api/certificates           → 201 + CertificateResponse | 400 | 409
-DELETE /api/certificates/{id}      → 204 | 404
+GET    /api/certificates                       → CertificateResponse[]
+GET    /api/certificates/{id}                  → CertificateResponse | 404
+POST   /api/certificates                       → 201 + CertificateResponse | 400 | 409   (manual PEM upload)
+POST   /api/certificates/self-signed           → 201 + CertificateResponse | 400 | 409   (HomeYarp-generated)
+POST   /api/certificates/{id}/regenerate       → 200 + CertificateResponse | 404 | 409   (self-signed only)
+POST   /api/certificates/acme                  → 201 + CertificateResponse | 400 | 409   (Let's Encrypt issue)
+POST   /api/certificates/{id}/renew            → 200 + CertificateResponse | 404 | 409   (ACME-managed only)
+DELETE /api/certificates/{id}                  → 204 | 404
 ```
+
+`409` from the application endpoints can mean either name conflict, or — when `tls.source = External` — that ACME isn't configured (`InvalidOperationException` thrown by `AcmeOptionsValidator.EnsureConfigured` is mapped to `Conflict` by the controller). The request body is well-formed; the *server state* blocks it.
 
 Application POST/PUT body:
 
@@ -73,25 +79,45 @@ Application POST/PUT body:
     "loadBalancingPolicy": "RoundRobin",
     "destinations": [{ "name": "primary", "address": "http://192.168.1.50:3000", "host": null }]
   },
-  "tls": { "mode": 1, "certificateId": "..." },
+  "tls": { "mode": 1, "source": 0, "certificateId": "..." },
   "authorizationPolicy": null
 }
 ```
 
-`tls.mode`: `0` = None, `1` = Offload, `2` = Passthrough. Routes default to `[]`, the `tls` block is optional and defaults to `{ mode: 0, certificateId: null }` when omitted.
+`tls.mode`: `0` = None, `1` = Offload, `2` = Passthrough. `tls.source`: `0` = Manual (default), `1` = Internal (HomeYarp self-signs), `2` = External (Let's Encrypt). Routes default to `[]`, the `tls` block is optional and defaults to `{ mode: 0, source: 0, certificateId: null }` when omitted. For `source = Internal | External`, `certificateId` is populated *by the service* during create/update — clients shouldn't set it.
 
-Certificate POST body:
+Certificate POST bodies:
 
-```json
+```jsonc
+// Upload (manual)
+POST /api/certificates
 {
   "name": "home-lan-wildcard",
   "friendlyName": "*.home.lan",
   "certificatePem": "-----BEGIN CERTIFICATE-----\n...",
   "privateKeyPem":  "-----BEGIN PRIVATE KEY-----\n..."
 }
+
+// Self-signed
+POST /api/certificates/self-signed
+{
+  "name": "homeassistant-internal",
+  "friendlyName": "Home Assistant (internal)",
+  "hostnames": ["ha.home.lan", "192.168.1.50", "*.lab.home.lan"],
+  "keyType": 0,         // 0 = Ec256 (default), 1 = Rsa2048
+  "validityDays": 365   // default 365
+}
+
+// ACME (Let's Encrypt)
+POST /api/certificates/acme
+{
+  "name": "cloud-perezfaulks",
+  "friendlyName": "Cloud (Let's Encrypt)",
+  "hostnames": ["cloud.perezfaulks.com"]
+}
 ```
 
-Conflict (`409`) is returned when the `name` collides. Validation problems (`400`) come from `ApplicationService.Validate` (see below) or from `X509Certificate2.CreateFromPem` failures during cert upload.
+Conflict (`409`) is returned when the `name` collides. Validation problems (`400`) come from `ApplicationService.Validate` (see below), `SelfSignedCertificateService` (empty hostnames, non-positive validity), `AcmeService.IssueAsync` (empty hostnames, wildcards), or `X509Certificate2.CreateFromPem` failures during manual upload.
 
 ## Validation rules
 
@@ -100,6 +126,11 @@ Conflict (`409`) is returned when the `name` collides. Validation problems (`400
 - `Name` is required (non-empty after trim) and must be unique across applications (case-insensitive).
 - `Cluster.Destinations` must have at least one entry.
 - Each destination requires a non-empty `Name` and an absolute URI for `Address` (`Uri.TryCreate(_, Absolute, out _)`).
+- TLS rules (`ValidateTls`):
+  - `Tls.Source != Manual` requires `Tls.Mode == Offload` — auto-managed sources only make sense when the proxy terminates TLS.
+  - `Tls.Source == Manual && Tls.Mode == Offload` requires a non-null `CertificateId` (was previously silently dropped — now an explicit 400).
+  - `Tls.Source != Manual` requires at least one non-empty hostname collected from `Routes[*].Hosts`.
+  - `Tls.Source == External` rejects wildcard hostnames (HTTP-01 limitation).
 
 `Update` additionally allows the current row to keep its own name (it only fails uniqueness if a *different* row owns the name).
 
@@ -121,7 +152,7 @@ The hot-reload story is built entirely on `Microsoft.Extensions.Primitives.Chang
 | `SniCertificateSelector`, `TlsPassthroughConnectionHandler` | Singleton | Plugged into Kestrel callbacks; cert cache is shared. |
 | `IAcmeChallengeStore`, `IAcmeAccountStore` | Singleton | Challenge store is a process-wide token map; account store wraps shared on-disk state. |
 | `AcmeRenewalService` | Hosted (Singleton) | Background loop. |
-| `IApplicationService`, `ICertificateService`, `IAcmeService`, `HomeYarpDbContext` | Scoped | Cheap, stateless; created per request/component activation. `AcmeService` uses static per-id semaphores to serialize concurrent calls. |
+| `IApplicationService`, `ICertificateService`, `IAcmeService`, `ISelfSignedCertificateService`, `HomeYarpDbContext` | Scoped | Cheap, stateless; created per request/component activation. `AcmeService` and `SelfSignedCertificateService` each hold a static `ConcurrentDictionary<Guid, SemaphoreSlim>` to serialize concurrent issue/renew/regenerate calls for the same cert id. |
 
 ## Let's Encrypt / ACME
 
@@ -150,6 +181,34 @@ HTTP-01 requires inbound port 80 to reach the `Http` listener, so port-forward 8
 
 REST surface: `POST /api/certificates/acme` issues, `POST /api/certificates/{id}/renew` renews. Blazor surface: `/certificates/request` (issuance form), `/certificates` shows ACME badge + per-row "Renew now" button, `/settings` shows a read-only ACME section.
 
+`AcmeOptionsValidator` (in `Acme/`) exposes `EnsureConfigured(options)` (throws) + `IsConfigured(options)` (bool). `AcmeService` uses the former at issue/renew time; `ApplicationService` uses it before kicking off `Source = External` provisioning so the user gets a fast failure at app-save time. The Razor `ApplicationEdit.razor` page uses `IsConfigured` to gray out the External radio button when ACME isn't configured.
+
+## Self-signed certificates
+
+HomeYarp can generate self-signed certificates itself for internal-only services — `HomeYarp.Application/SelfSigned/`:
+
+- **`SelfSignedCertificateService`** (scoped) drives `IssueAsync(name, friendlyName, hostnames, keyType, validityDays)` and two `RegenerateAsync` overloads — one no-arg (used by the cert page's "Regenerate" button) and one taking new hostnames (used by `ApplicationService` when route hosts change on an `Internal`-source app). Both eventually go through `RegenerateInternalAsync`. Generation uses BCL `CertificateRequest`: build a `SubjectAlternativeNameBuilder` adding entries as DNS names by default, IP addresses when `IPAddress.TryParse` succeeds; configure key (`ECDsa.Create(NistP256)` or `RSA.Create(2048)`); set `BasicConstraints(false)`, `KeyUsage(DigitalSignature | KeyEncipherment, critical)`, `EnhancedKeyUsage(serverAuth)`, `SubjectKeyIdentifier`; call `CreateSelfSigned(notBefore, notAfter)`; export cert via `ExportCertificatePem()` and key via `ExportPkcs8PrivateKeyPem()`. The PEM material has the same shape as ACME or upload — `SniCertificateSelector.LoadX509` handles it identically.
+- **`Certificate.SelfSigned`** is the marker for HomeYarp-generated certs. `{ Hostnames, KeyType, ValidityDays, IssuedAt, RegeneratedAt? }`. Mutually exclusive with `Certificate.Acme`.
+- **No background renewal** — self-signed certs aren't auto-rotated. The user clicks "Regenerate" or `POST /api/certificates/{id}/regenerate` when they want fresh material. Wildcards and IP SANs are accepted (since we control issuance).
+
+REST surface: `POST /api/certificates/self-signed` issues, `POST /api/certificates/{id}/regenerate` regenerates. Blazor surface: `/certificates/generate` (issuance form), `/certificates` shows "Self-signed" badge + per-row "Regenerate" button.
+
+## Auto-managed certificate lifecycle (Internal / External sources)
+
+`ApplicationService` owns the cert when `Tls.Source != Manual`. Logic lives in `EnsureAutoManagedCertificateAsync(incoming, previous)`, called from both `CreateAsync` and `UpdateAsync` *before* the app row is persisted:
+
+- **Source switch** (Internal↔External, or auto→Manual): the previously auto-managed cert (1:1 with the app) is deleted. This is silent — there's no confirmation in the UI; the user explicitly changed sources.
+- **Reuse-if-unchanged**: if `newSource == prevSource` and the existing cert's `Hostnames` (`SelfSigned.Hostnames` or `Acme.Hostnames`) match the route hosts, leave it alone.
+- **Hostname change on `Internal`**: regenerate via `ISelfSignedCertificateService.RegenerateAsync(id, newHostnames)`. Same cert id, fresh key, fresh expiry, updated SANs.
+- **Hostname change on `External`**: throws `InvalidOperationException` ("Delete and recreate, or switch to Manual"). v1 doesn't support ACME re-issue with new hostnames — it'd require a fresh order across the network and a new account-key signature; the cleanest follow-up is `IAcmeService.ReissueAsync(id, hostnames)`.
+- **First-time `Internal` provisioning**: issue via `ISelfSignedCertificateService.IssueAsync` with `keyType = Ec256`, `validityDays = 365`, name = `{appName}-internal`, friendly name = `{displayName ?? appName} (internal)`.
+- **First-time `External` provisioning**: `AcmeOptionsValidator.EnsureConfigured` first, then `IAcmeService.IssueAsync`, name = `{appName}-external`, friendly name = `{displayName ?? appName} (Let's Encrypt)`.
+- **App delete**: `DeleteAsync` reads the app first; if `Tls.Source != Manual && CertificateId is { }`, the cert is deleted immediately after the app row.
+
+The auto-managed cert's `Name` is stable at creation — renaming the app doesn't rename the cert. Linkage is by `Tls.CertificateId`, so nothing breaks; the cert just keeps its original `{oldName}-{source}` slug.
+
+`ApplicationService` therefore depends on `IApplicationRepository`, `ICertificateRepository` (for direct delete), `ISelfSignedCertificateService`, `IAcmeService`, and `IOptionsMonitor<AcmeOptions>`. All scoped, all in the same project except the options monitor.
+
 ## Listeners
 
 Configured under `HomeYarp:Listeners` in `appsettings.json`. Each port is optional — set to `null` or `0` to disable. Defaults in dev:
@@ -171,6 +230,8 @@ Production deployments would typically map these to 80/443/8443 (or whatever the
 - **PEM, not PFX, for cert uploads.** Stored as `{id}.cert.pem` + `{id}.key.pem` next to a JSON manifest holding parsed metadata (subject, issuer, SANs, expiry, thumbprint). The selector roundtrips PEM → in-memory PFX before handing the cert to Kestrel — `X509Certificate2.CreateFromPem` alone produces a cert whose private key Schannel can't see during the handshake.
 - **Private keys are stored unencrypted on disk for v1.** Acceptable for a homelab; encrypting at rest (DPAPI / Data Protection) is a known follow-up.
 - **`AuthorizationPolicy` on `Application` is a string placeholder** — not yet wired to ASP.NET Core auth. Adding policy registration + binding to YARP routes is the next iteration.
+- **Three certificate sources, one shape on disk.** Manual upload, self-signed, and ACME all produce the same `Certificate` record + `{cert,key}.pem` pair. The `SelfSigned` and `Acme` metadata blocks are mutually exclusive — at most one set; both null means manual upload. The selector and proxy don't care which source produced a cert.
+- **Auto-managed certs are 1:1 with their owning application.** Naming convention `{appName}-{internal|external}` makes them discoverable; ownership is enforced by `ApplicationService` cleaning up on source switch + app delete.
 - **No tests yet.** Verification is currently manual via the `.http` file.
 
 ## Naming gotcha

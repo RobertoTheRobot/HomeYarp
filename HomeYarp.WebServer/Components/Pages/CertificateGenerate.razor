@@ -1,0 +1,114 @@
+@page "/certificates/generate"
+@using HomeYarp.Application.SelfSigned
+@using HomeYarp.Domain
+@inject ISelfSignedCertificateService SelfSigned
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>Generate self-signed · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>Generate self-signed certificate</h1>
+    <a class="btn" href="certificates">Back</a>
+</div>
+
+<p class="muted">
+    HomeYarp will generate a private key and self-sign a certificate for the hostnames below.
+    Use this for internal-only services that aren't reachable from the public internet — clients
+    will need to trust HomeYarp's cert (or be told to ignore the warning) since it isn't issued
+    by a public CA.
+</p>
+
+<EditForm Model="this" OnValidSubmit="GenerateAsync" FormName="cert-generate">
+    <fieldset>
+        <legend>Identity</legend>
+        <label>
+            Name (slug)
+            <input class="input" @bind="_name" required placeholder="e.g. homeassistant-internal" />
+        </label>
+        <label>
+            Friendly name
+            <input class="input" @bind="_friendlyName" placeholder="e.g. Home Assistant (internal)" />
+        </label>
+    </fieldset>
+
+    <fieldset>
+        <legend>Hostnames</legend>
+        <label>
+            One per line. The first becomes the certificate's Common Name. IP addresses go into
+            the SAN as IP entries; everything else as DNS entries. Wildcards (<code>*.home.lan</code>)
+            are allowed for self-signed certs.
+            <textarea class="input" rows="6" @bind="_hostnames" placeholder="homeassistant.home.lan&#10;192.168.1.50" required></textarea>
+        </label>
+    </fieldset>
+
+    <fieldset>
+        <legend>Key &amp; validity</legend>
+        <label>
+            Key type
+            <select class="input" @bind="_keyType">
+                <option value="@CertificateKeyType.Ec256">EC P-256 (recommended)</option>
+                <option value="@CertificateKeyType.Rsa2048">RSA 2048</option>
+            </select>
+        </label>
+        <label>
+            Validity (days)
+            <input class="input narrow" type="number" min="1" max="3650" @bind="_validityDays" />
+        </label>
+    </fieldset>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="error">@_error</div>
+    }
+
+    <div class="form-actions">
+        <button type="submit" class="btn primary" disabled="@_busy">
+            @(_busy ? "Generating…" : "Generate certificate")
+        </button>
+    </div>
+</EditForm>
+
+@code {
+    private string _name = string.Empty;
+    private string _friendlyName = string.Empty;
+    private string _hostnames = string.Empty;
+    private CertificateKeyType _keyType = CertificateKeyType.Ec256;
+    private int _validityDays = 365;
+    private bool _busy;
+    private string? _error;
+
+    private async Task GenerateAsync()
+    {
+        _error = null;
+        var hosts = (_hostnames ?? string.Empty)
+            .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (hosts.Count == 0)
+        {
+            _error = "At least one hostname is required.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await SelfSigned.IssueAsync(
+                _name,
+                string.IsNullOrWhiteSpace(_friendlyName) ? null : _friendlyName,
+                hosts,
+                _keyType,
+                _validityDays);
+            Nav.NavigateTo("certificates");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

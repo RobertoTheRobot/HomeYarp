@@ -1,5 +1,6 @@
 using HomeYarp.Application.Acme;
 using HomeYarp.Application.Proxy;
+using HomeYarp.Application.SelfSigned;
 using HomeYarp.Application.Services;
 using HomeYarp.Application.Tls;
 using Microsoft.Extensions.Configuration;
@@ -19,6 +20,7 @@ public static class DependencyInjection
         services.AddScoped<IApplicationService, ApplicationService>();
         services.AddScoped<ICertificateService, CertificateService>();
         services.AddScoped<IAcmeService, AcmeService>();
+        services.AddScoped<ISelfSignedCertificateService, SelfSignedCertificateService>();
 
         services.AddSingleton<IProxyConfigProvider, HomeYarpConfigProvider>();
         services.AddSingleton<SniCertificateSelector>();

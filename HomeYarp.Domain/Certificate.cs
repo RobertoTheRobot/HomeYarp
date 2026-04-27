@@ -23,4 +23,6 @@ public sealed class Certificate
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public AcmeMetadata? Acme { get; set; }
+
+    public SelfSignedMetadata? SelfSigned { get; set; }
 }

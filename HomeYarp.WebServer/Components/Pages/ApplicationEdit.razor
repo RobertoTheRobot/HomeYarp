@@ -1,7 +1,10 @@
 @page "/applications/new"
 @page "/applications/{Id:guid}"
+@using HomeYarp.Application.Acme
+@using Microsoft.Extensions.Options
 @inject IApplicationService Service
 @inject ICertificateService CertificateService
+@inject IOptionsMonitor<AcmeOptions> AcmeOptions
 @inject NavigationManager Nav
 @rendermode InteractiveServer
 
@@ -86,18 +89,60 @@ else
             @if (_model.Tls.Mode == TlsMode.Offload)
             {
                 <label>
-                    Certificate
-                    <select class="input" @bind="_model.Tls.CertificateId">
-                        <option value="">-- select a certificate --</option>
-                        @foreach (var cert in _certificates)
-                        {
-                            <option value="@cert.Id">@cert.Name (@cert.NotAfter.ToString("yyyy-MM-dd"))</option>
-                        }
-                    </select>
+                    Certificate source
                 </label>
-                @if (_certificates.Count == 0)
+                <div class="radio-group">
+                    <label class="checkbox">
+                        <input type="radio" name="cert-source"
+                               checked="@(_model.Tls.Source == TlsCertificateSource.Internal)"
+                               @onchange="() => SetSource(TlsCertificateSource.Internal)" />
+                        Internal &mdash; HomeYarp generates a self-signed certificate for the route hostnames
+                    </label>
+                    <label class="checkbox">
+                        <input type="radio" name="cert-source"
+                               checked="@(_model.Tls.Source == TlsCertificateSource.External)"
+                               disabled="@(!_acmeReady)"
+                               @onchange="() => SetSource(TlsCertificateSource.External)" />
+                        External &mdash; HomeYarp requests a certificate from Let's Encrypt
+                        @if (!_acmeReady)
+                        {
+                            <span class="muted"> (configure ACME under <a href="settings">Settings</a> first)</span>
+                        }
+                    </label>
+                    <label class="checkbox">
+                        <input type="radio" name="cert-source"
+                               checked="@(_model.Tls.Source == TlsCertificateSource.Manual)"
+                               @onchange="() => SetSource(TlsCertificateSource.Manual)" />
+                        Use existing certificate
+                    </label>
+                </div>
+
+                @if (_model.Tls.Source == TlsCertificateSource.Manual)
                 {
-                    <p class="muted">No certificates yet — <a href="certificates/upload">upload one</a> first.</p>
+                    <label>
+                        Certificate
+                        <select class="input" @bind="_model.Tls.CertificateId">
+                            <option value="">-- select a certificate --</option>
+                            @foreach (var cert in _certificates)
+                            {
+                                <option value="@cert.Id">@cert.Name (@cert.NotAfter.ToString("yyyy-MM-dd"))</option>
+                            }
+                        </select>
+                    </label>
+                    @if (_certificates.Count == 0)
+                    {
+                        <p class="muted">No certificates yet — <a href="certificates/upload">upload one</a> first.</p>
+                    }
+                }
+                else
+                {
+                    <p class="muted">
+                        Hostnames are taken from the routes above. Save the application to create or update the certificate.
+                        @if (_model.Tls.Source == TlsCertificateSource.External)
+                        {
+                            <span> Each hostname must publicly resolve to this server, and inbound port 80 must reach the HTTP listener.</span>
+                        }
+                    </p>
                 }
             }
             else if (_model.Tls.Mode == TlsMode.Passthrough)
@@ -156,6 +201,7 @@ else
     private bool _loading = true;
     private bool _notFound;
     private bool _saving;
+    private bool _acmeReady;
     private string? _error;
 
     protected override async Task OnParametersSetAsync()
@@ -166,6 +212,7 @@ else
         _error = null;
 
         _certificates = await CertificateService.ListAsync();
+        _acmeReady = AcmeOptionsValidator.IsConfigured(AcmeOptions.CurrentValue);
 
         if (_isNew)
         {
@@ -210,6 +257,16 @@ else
         finally
         {
             _saving = false;
+        }
+    }
+
+    private void SetSource(TlsCertificateSource source)
+    {
+        _model.Tls.Source = source;
+        if (source != TlsCertificateSource.Manual)
+        {
+            // Auto-managed sources own CertificateId — clear the user's stale pick so the service can populate on save.
+            _model.Tls.CertificateId = null;
         }
     }
 
