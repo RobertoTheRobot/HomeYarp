@@ -1,0 +1,96 @@
+@page "/certificates/request"
+@using HomeYarp.Application.Acme
+@inject IAcmeService Acme
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>Request certificate · HomeYarp</PageTitle>
+
+<div class="page-header">
+    <h1>Request certificate from Let's Encrypt</h1>
+    <a class="btn" href="certificates">Back</a>
+</div>
+
+<p class="muted">
+    HomeYarp will request a fresh certificate from Let's Encrypt over the ACME HTTP-01 challenge.
+    Each hostname must publicly resolve to this server, and inbound port 80 must reach the HTTP listener.
+    Configure ACME first under <a href="settings">Settings</a> &mdash;
+    <code>HomeYarp:Acme:Enabled</code>, <code>AccountEmail</code>, and
+    <code>AgreeToTermsOfService</code> must all be set.
+</p>
+
+<EditForm Model="this" OnValidSubmit="RequestAsync" FormName="cert-request">
+    <fieldset>
+        <legend>Identity</legend>
+        <label>
+            Name (slug)
+            <input class="input" @bind="_name" required placeholder="e.g. cloud-perezfaulks" />
+        </label>
+        <label>
+            Friendly name
+            <input class="input" @bind="_friendlyName" placeholder="e.g. Cloud (Let's Encrypt)" />
+        </label>
+    </fieldset>
+
+    <fieldset>
+        <legend>Hostnames</legend>
+        <label>
+            One per line. The first hostname becomes the certificate's Common Name.
+            <textarea class="input" rows="6" @bind="_hostnames" placeholder="cloud.perezfaulks.com&#10;www.cloud.perezfaulks.com" required></textarea>
+        </label>
+        <p class="muted">
+            Wildcards (<code>*.example.com</code>) are not supported &mdash; HTTP-01 cannot validate them.
+        </p>
+    </fieldset>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="error">@_error</div>
+    }
+
+    <div class="form-actions">
+        <button type="submit" class="btn primary" disabled="@_busy">
+            @(_busy ? "Requesting… (this can take 30-60s)" : "Request certificate")
+        </button>
+    </div>
+</EditForm>
+
+@code {
+    private string _name = string.Empty;
+    private string _friendlyName = string.Empty;
+    private string _hostnames = string.Empty;
+    private bool _busy;
+    private string? _error;
+
+    private async Task RequestAsync()
+    {
+        _error = null;
+        var hosts = (_hostnames ?? string.Empty)
+            .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (hosts.Count == 0)
+        {
+            _error = "At least one hostname is required.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await Acme.IssueAsync(
+                _name,
+                string.IsNullOrWhiteSpace(_friendlyName) ? null : _friendlyName,
+                hosts);
+            Nav.NavigateTo("certificates");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

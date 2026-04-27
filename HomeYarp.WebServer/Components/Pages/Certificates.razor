@@ -1,13 +1,23 @@
 @page "/certificates"
+@using HomeYarp.Application.Acme
 @inject ICertificateService Service
+@inject IAcmeService Acme
 @rendermode InteractiveServer
 
 <PageTitle>Certificates · HomeYarp</PageTitle>
 
 <div class="page-header">
     <h1>Certificates</h1>
-    <a class="btn primary" href="certificates/upload">+ Upload</a>
+    <div>
+        <a class="btn" href="certificates/request">+ Request via Let's Encrypt</a>
+        <a class="btn primary" href="certificates/upload">+ Upload PEM</a>
+    </div>
 </div>
+
+@if (_error is not null)
+{
+    <p class="error">@_error</p>
+}
 
 @if (_certs is null)
 {
@@ -15,7 +25,7 @@
 }
 else if (_certs.Count == 0)
 {
-    <p class="empty">No certificates yet. Upload one to enable TLS offload.</p>
+    <p class="empty">No certificates yet. Upload one or request from Let's Encrypt to enable TLS offload.</p>
 }
 else
 {
@@ -25,6 +35,7 @@ else
                 <th>Name</th>
                 <th>Subject</th>
                 <th>SANs</th>
+                <th>Source</th>
                 <th>Expires</th>
                 <th class="actions"></th>
             </tr>
@@ -48,6 +59,24 @@ else
                         }
                     </td>
                     <td>
+                        @if (cert.Acme is not null)
+                        {
+                            <span class="badge">ACME</span>
+                            @if (cert.Acme.RenewedAt is { } renewed)
+                            {
+                                <div class="muted">renewed @renewed.ToString("yyyy-MM-dd")</div>
+                            }
+                            else
+                            {
+                                <div class="muted">issued @cert.Acme.IssuedAt.ToString("yyyy-MM-dd")</div>
+                            }
+                        }
+                        else
+                        {
+                            <span class="muted">manual</span>
+                        }
+                    </td>
+                    <td>
                         @cert.NotAfter.ToString("yyyy-MM-dd")
                         @if (cert.NotAfter < DateTimeOffset.UtcNow)
                         {
@@ -55,6 +84,14 @@ else
                         }
                     </td>
                     <td class="actions">
+                        @if (cert.Acme is not null)
+                        {
+                            <button class="btn"
+                                    disabled="@(_busyId == cert.Id)"
+                                    @onclick="() => RenewAsync(cert)">
+                                @(_busyId == cert.Id ? "Renewing…" : "Renew now")
+                            </button>
+                        }
                         <button class="btn danger" @onclick="() => DeleteAsync(cert)">Delete</button>
                     </td>
                 </tr>
@@ -65,14 +102,39 @@ else
 
 @code {
     private IReadOnlyList<HomeYarp.Domain.Certificate>? _certs;
+    private string? _error;
+    private Guid? _busyId;
 
     protected override async Task OnInitializedAsync() => await Reload();
 
-    private async Task Reload() => _certs = await Service.ListAsync();
+    private async Task Reload()
+    {
+        _error = null;
+        _certs = await Service.ListAsync();
+    }
 
     private async Task DeleteAsync(HomeYarp.Domain.Certificate cert)
     {
         await Service.DeleteAsync(cert.Id);
         await Reload();
+    }
+
+    private async Task RenewAsync(HomeYarp.Domain.Certificate cert)
+    {
+        _busyId = cert.Id;
+        _error = null;
+        try
+        {
+            await Acme.RenewAsync(cert.Id);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Renewal failed: {ex.Message}";
+        }
+        finally
+        {
+            _busyId = null;
+        }
     }
 }

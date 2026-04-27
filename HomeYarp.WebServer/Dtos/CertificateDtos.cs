@@ -12,13 +12,27 @@ public sealed record CertificateResponse(
     DateTimeOffset NotBefore,
     DateTimeOffset NotAfter,
     IReadOnlyList<string> SubjectAlternativeNames,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AcmeMetadataResponse? Acme);
+
+public sealed record AcmeMetadataResponse(
+    IReadOnlyList<string> Hostnames,
+    string AccountEmail,
+    string DirectoryUrl,
+    string KeyType,
+    DateTimeOffset IssuedAt,
+    DateTimeOffset? RenewedAt);
 
 public sealed record CertificateUploadRequest(
     string Name,
     string? FriendlyName,
     string CertificatePem,
     string PrivateKeyPem);
+
+public sealed record AcmeIssueRequest(
+    string Name,
+    string? FriendlyName,
+    IReadOnlyList<string> Hostnames);
 
 public static class CertificateDtoMapper
 {
@@ -32,5 +46,12 @@ public static class CertificateDtoMapper
         c.NotBefore,
         c.NotAfter,
         c.SubjectAlternativeNames,
-        c.CreatedAt);
+        c.CreatedAt,
+        c.Acme is null ? null : new AcmeMetadataResponse(
+            c.Acme.Hostnames,
+            c.Acme.AccountEmail,
+            c.Acme.DirectoryUrl,
+            c.Acme.KeyType.ToString(),
+            c.Acme.IssuedAt,
+            c.Acme.RenewedAt));
 }

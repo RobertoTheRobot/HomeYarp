@@ -1,4 +1,5 @@
 using HomeYarp.Application.Abstractions;
+using HomeYarp.Application.Acme;
 using HomeYarp.Application.Services;
 using HomeYarp.WebServer.Dtos;
 using Microsoft.AspNetCore.Mvc;
@@ -10,10 +11,12 @@ namespace HomeYarp.WebServer.Controllers;
 public sealed class CertificatesController : ControllerBase
 {
     private readonly ICertificateService _service;
+    private readonly IAcmeService _acme;
 
-    public CertificatesController(ICertificateService service)
+    public CertificatesController(ICertificateService service, IAcmeService acme)
     {
         _service = service;
+        _acme = acme;
     }
 
     [HttpGet]
@@ -42,6 +45,42 @@ public sealed class CertificatesController : ControllerBase
         catch (ArgumentException ex)
         {
             return ValidationProblem(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("acme")]
+    public async Task<ActionResult<CertificateResponse>> IssueViaAcme([FromBody] AcmeIssueRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var created = await _acme.IssueAsync(request.Name, request.FriendlyName, request.Hostnames ?? Array.Empty<string>(), cancellationToken);
+            return CreatedAtAction(nameof(Get), new { id = created.Id }, CertificateDtoMapper.ToResponse(created));
+        }
+        catch (ArgumentException ex)
+        {
+            return ValidationProblem(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id:guid}/renew")]
+    public async Task<ActionResult<CertificateResponse>> Renew(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var renewed = await _acme.RenewAsync(id, cancellationToken);
+            return Ok(CertificateDtoMapper.ToResponse(renewed));
+        }
+        catch (ArgumentException ex)
+        {
+            return NotFound(new { message = ex.Message });
         }
         catch (InvalidOperationException ex)
         {

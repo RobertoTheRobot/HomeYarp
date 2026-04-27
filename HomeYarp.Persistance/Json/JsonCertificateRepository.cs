@@ -10,7 +10,8 @@ public sealed class JsonCertificateRepository : ICertificateRepository
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        WriteIndented = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
     };
 
     private readonly string _directory;
@@ -86,15 +87,15 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         return new CertificateMaterial(cert, key);
     }
 
-    public async Task AddAsync(Certificate certificate, CertificateMaterial material, CancellationToken cancellationToken = default)
+    public async Task SaveAsync(Certificate certificate, CertificateMaterial material, CancellationToken cancellationToken = default)
     {
         await EnsureLoadedAsync(cancellationToken);
         await _gate.WaitAsync(cancellationToken);
         try
         {
             _cache[certificate.Id] = certificate;
-            await File.WriteAllTextAsync(GetCertPath(certificate.Id), material.CertificatePem, cancellationToken);
-            await File.WriteAllTextAsync(GetKeyPath(certificate.Id), material.PrivateKeyPem, cancellationToken);
+            await WriteAtomicAsync(GetCertPath(certificate.Id), material.CertificatePem, cancellationToken);
+            await WriteAtomicAsync(GetKeyPath(certificate.Id), material.PrivateKeyPem, cancellationToken);
             await WriteManifestAsync(certificate, cancellationToken);
         }
         finally
@@ -183,6 +184,20 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         {
             await JsonSerializer.SerializeAsync(stream, certificate, SerializerOptions, cancellationToken);
         }
+        if (File.Exists(finalPath))
+        {
+            File.Replace(tempPath, finalPath, destinationBackupFileName: null);
+        }
+        else
+        {
+            File.Move(tempPath, finalPath);
+        }
+    }
+
+    private static async Task WriteAtomicAsync(string finalPath, string contents, CancellationToken cancellationToken)
+    {
+        var tempPath = finalPath + ".tmp";
+        await File.WriteAllTextAsync(tempPath, contents, cancellationToken);
         if (File.Exists(finalPath))
         {
             File.Replace(tempPath, finalPath, destinationBackupFileName: null);

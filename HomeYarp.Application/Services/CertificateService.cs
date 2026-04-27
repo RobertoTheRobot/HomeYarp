@@ -63,7 +63,7 @@ public sealed class CertificateService : ICertificateService
                 CreatedAt = DateTimeOffset.UtcNow
             };
 
-            await _repository.AddAsync(cert, material, cancellationToken);
+            await _repository.SaveAsync(cert, material, cancellationToken);
             return cert;
         }
     }

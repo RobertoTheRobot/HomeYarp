@@ -1,4 +1,5 @@
 using HomeYarp.Application;
+using HomeYarp.Application.Acme;
 using HomeYarp.Persistance;
 using HomeYarp.WebServer;
 using HomeYarp.WebServer.Components;
@@ -16,7 +17,7 @@ builder.Services
 
 builder.Services
     .AddHomeYarpPersistance(builder.Configuration)
-    .AddHomeYarpApplication();
+    .AddHomeYarpApplication(builder.Configuration);
 
 builder.Services.AddReverseProxy();
 
@@ -30,6 +31,11 @@ if (app.Environment.IsDevelopment())
 app.UseStaticFiles();
 app.UseAntiforgery();
 app.UseAuthorization();
+
+app.MapGet("/.well-known/acme-challenge/{token}", (string token, IAcmeChallengeStore store) =>
+    store.TryGet(token, out var keyAuth)
+        ? Results.Text(keyAuth, "text/plain")
+        : Results.NotFound());
 
 app.MapControllers();
 

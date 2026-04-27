@@ -13,7 +13,7 @@ public interface ICertificateRepository
 
     Task<CertificateMaterial?> GetMaterialAsync(Guid id, CancellationToken cancellationToken = default);
 
-    Task AddAsync(Certificate certificate, CertificateMaterial material, CancellationToken cancellationToken = default);
+    Task SaveAsync(Certificate certificate, CertificateMaterial material, CancellationToken cancellationToken = default);
 
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 

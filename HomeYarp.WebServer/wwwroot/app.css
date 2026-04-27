@@ -106,6 +106,19 @@ code {
 }
 
 .muted { color: var(--muted); font-size: 0.85rem; }
+
+.badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    color: var(--accent);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+}
 .empty { color: var(--muted); padding: 2rem; text-align: center; background: var(--panel); border: 1px dashed var(--border); border-radius: 8px; }
 
 fieldset {

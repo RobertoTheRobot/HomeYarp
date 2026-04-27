@@ -119,7 +119,36 @@ The hot-reload story is built entirely on `Microsoft.Extensions.Primitives.Chang
 | `IApplicationRepository`, `ICertificateRepository` | Singleton | Shared in-memory cache and change tokens. |
 | `IProxyConfigProvider` (`HomeYarpConfigProvider`) | Singleton | Required by YARP. |
 | `SniCertificateSelector`, `TlsPassthroughConnectionHandler` | Singleton | Plugged into Kestrel callbacks; cert cache is shared. |
-| `IApplicationService`, `ICertificateService`, `HomeYarpDbContext` | Scoped | Cheap, stateless; created per request/component activation. |
+| `IAcmeChallengeStore`, `IAcmeAccountStore` | Singleton | Challenge store is a process-wide token map; account store wraps shared on-disk state. |
+| `AcmeRenewalService` | Hosted (Singleton) | Background loop. |
+| `IApplicationService`, `ICertificateService`, `IAcmeService`, `HomeYarpDbContext` | Scoped | Cheap, stateless; created per request/component activation. `AcmeService` uses static per-id semaphores to serialize concurrent calls. |
+
+## Let's Encrypt / ACME
+
+HomeYarp can issue and renew certificates from Let's Encrypt over the ACME HTTP-01 challenge — `HomeYarp.Application/Acme/`:
+
+- **`AcmeService`** (scoped) drives both `IssueAsync` and `RenewAsync`. It loads or registers an account via `IAcmeAccountStore`, places an order with Certes, publishes each `KeyAuthz` to the `IAcmeChallengeStore`, calls `Validate()`, polls until the challenge resource turns valid, generates the cert with a fresh ES256 key, downloads the PEM chain, parses metadata exactly the way `CertificateService.UploadAsync` does, and persists via `ICertificateRepository.SaveAsync`. A `static ConcurrentDictionary<Guid, SemaphoreSlim>` serializes concurrent renewals for the same cert id.
+- **`AcmeRenewalService` : `BackgroundService`** waits `Acme:StartupDelay` (60s default) then loops every `Acme:RenewalInterval` (24h default). Each tick it lists certs, filters those with `Acme is not null && NotAfter - now < RenewBefore`, and calls `RenewAsync` per cert. Failures log and continue — the next tick retries. The loop exits immediately if `Acme:Enabled == false`, so flipping the flag requires a restart.
+- **`InMemoryAcmeChallengeStore`** is a singleton `ConcurrentDictionary<token, keyAuthz>`. `Program.cs` maps `GET /.well-known/acme-challenge/{token}` immediately before `MapReverseProxy()` so the literal endpoint wins over YARP's catch-all routing.
+- **`FileAcmeAccountStore`** (in `HomeYarp.Persistance.Json`) persists the ACME account key + registration metadata at `{DataRoot}/acme/account.{sha8(directoryUrl)}.{pem|json}`. Account is scoped per directory URL, so flipping between staging and production creates separate accounts.
+- **`Certificate.Acme`** is the marker. Manually-uploaded certs leave it null (renewal worker skips them); ACME-issued/renewed certs hold `{ Hostnames, AccountEmail, DirectoryUrl, KeyType, IssuedAt, RenewedAt? }`.
+
+Configuration lives under `HomeYarp:Acme` in `appsettings.json`:
+
+| Key | Default | Notes |
+|---|---|---|
+| `Enabled` | `false` | Master switch. Renewal worker exits immediately when false. |
+| `AccountEmail` | `""` | Required when issuing. |
+| `AgreeToTermsOfService` | `false` | Required when issuing. |
+| `DirectoryUrl` | LE production | Set to `https://acme-staging-v02.api.letsencrypt.org/directory` for testing. |
+| `KeyType` | `Ec256` | Or `Rsa2048`. |
+| `RenewBefore` | `30.00:00:00` | Renew when `NotAfter - now` is below this. |
+| `RenewalInterval` | `24:00:00` | How often the background worker checks. |
+| `StartupDelay` | `00:01:00` | Grace period before the first tick. |
+
+HTTP-01 requires inbound port 80 to reach the `Http` listener, so port-forward 80 → HomeYarp's Http port. Wildcards (`*.example.com`) are not supported — they require DNS-01.
+
+REST surface: `POST /api/certificates/acme` issues, `POST /api/certificates/{id}/renew` renews. Blazor surface: `/certificates/request` (issuance form), `/certificates` shows ACME badge + per-row "Renew now" button, `/settings` shows a read-only ACME section.
 
 ## Listeners
 

@@ -21,4 +21,6 @@ public sealed class Certificate
     public List<string> SubjectAlternativeNames { get; set; } = new();
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public AcmeMetadata? Acme { get; set; }
 }

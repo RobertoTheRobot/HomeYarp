@@ -1,7 +1,9 @@
 @page "/settings"
 @using Microsoft.Extensions.Options
+@using HomeYarp.Application.Acme
 @using HomeYarp.Persistance.Json
 @inject IOptions<JsonStoreOptions> StorageOptions
+@inject IOptionsMonitor<AcmeOptions> AcmeOptionsMonitor
 @inject IApplicationService Service
 @rendermode InteractiveServer
 
@@ -30,11 +32,42 @@
     </dl>
 </section>
 
+<section>
+    <h2>Let's Encrypt (ACME)</h2>
+    <dl class="kv">
+        <dt>Enabled</dt>
+        <dd>@(_acme.Enabled ? "yes" : "no")</dd>
+        <dt>Account email</dt>
+        <dd>@(string.IsNullOrWhiteSpace(_acme.AccountEmail) ? "(not set)" : _acme.AccountEmail)</dd>
+        <dt>Terms of Service agreed</dt>
+        <dd>@(_acme.AgreeToTermsOfService ? "yes" : "no")</dd>
+        <dt>Directory</dt>
+        <dd>
+            <code>@_acme.DirectoryUrl</code>
+            @if (string.Equals(_acme.DirectoryUrl, AcmeOptions.LetsEncryptStagingDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                <span class="badge">STAGING</span>
+            }
+        </dd>
+        <dt>Key type</dt>
+        <dd>@_acme.KeyType</dd>
+        <dt>Renew before</dt>
+        <dd>@_acme.RenewBefore</dd>
+        <dt>Renewal interval</dt>
+        <dd>@_acme.RenewalInterval</dd>
+    </dl>
+    <p class="muted">
+        Configured via <code>HomeYarp:Acme</code> in <code>appsettings.json</code>. Changes require a restart.
+        Inbound port 80 must reach this server's HTTP listener for HTTP-01 challenges to succeed.
+    </p>
+</section>
+
 @code {
     private string _resolvedPath = string.Empty;
     private int _appCount;
     private int _enabledCount;
     private int _destinationCount;
+    private AcmeOptions _acme = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -47,5 +80,7 @@
         _appCount = apps.Count;
         _enabledCount = apps.Count(a => a.Enabled);
         _destinationCount = apps.Where(a => a.Enabled).Sum(a => a.Cluster.Destinations.Count);
+
+        _acme = AcmeOptionsMonitor.CurrentValue;
     }
 }
