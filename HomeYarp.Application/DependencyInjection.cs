@@ -15,6 +15,7 @@ public static class DependencyInjection
     public static IServiceCollection AddHomeYarpApplication(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
+        services.Configure<SelfSignedOptions>(configuration.GetSection(SelfSignedOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<IApplicationService, ApplicationService>();
@@ -28,6 +29,7 @@ public static class DependencyInjection
         services.AddSingleton<IAcmeChallengeStore, InMemoryAcmeChallengeStore>();
 
         services.AddHostedService<AcmeRenewalService>();
+        services.AddHostedService<SelfSignedRenewalService>();
 
         return services;
     }

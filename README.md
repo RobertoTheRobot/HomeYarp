@@ -13,7 +13,7 @@ A YARP-based reverse proxy with a built-in REST API and Blazor UI for managing a
   - **Passthrough** — proxy peeks the TLS ClientHello SNI, opens a raw TCP socket to the backend, and bidirectionally pumps bytes. The proxy never decrypts; the backend terminates TLS itself.
 - **Three certificate sources**, all interchangeable from the proxy's point of view:
   - **Manual** — paste a PEM cert + key (or POST one).
-  - **Self-signed** — HomeYarp generates a key and self-signs for the requested hostnames. Wildcards and IP SANs supported. Use for internal-only services.
+  - **Self-signed** — HomeYarp generates a key and self-signs for the requested hostnames. Wildcards and IP SANs supported. Use for internal-only services. Auto-renewed by a daily background worker that regenerates any self-signed cert within the configured expiry threshold.
   - **Let's Encrypt** — issued and auto-renewed via ACME HTTP-01. A daily background worker renews any cert within the configured expiry threshold.
 - **One-step TLS via per-app `Internal` / `External` toggle.** Pick `Internal` and HomeYarp self-signs for the route hostnames. Pick `External` and HomeYarp orders from Let's Encrypt. The cert's lifecycle is tied to the app — created on save, regenerated when hostnames change, deleted when the app is deleted.
 
@@ -217,14 +217,27 @@ curl -X POST http://localhost:5268/api/certificates/self-signed \
 
 `keyType`: `0` = EC P-256 (default, recommended), `1` = RSA 2048. `validityDays` defaults to `365`. DNS hostnames go into the SAN as `DNS:` entries; entries that parse as `IPAddress` go in as `IP Address:` entries.
 
-### Regenerate
+### Renewal
 
-Self-signed certs aren't auto-renewed (there's no expiry coordination — only the user knows when to rotate). To regenerate in place (same id, fresh key, fresh expiry):
+A `SelfSignedRenewalService` background worker auto-rotates self-signed certs. It lists every cert with the `SelfSigned` block populated and regenerates anything within `RenewBefore` of expiry (default: 30 days). The SNI cache hot-swaps the new key as soon as the regenerated material lands on disk — clients see a fresh cert on their next handshake.
+
+Configure under `HomeYarp:SelfSigned` in `appsettings.json`:
+
+```json
+"SelfSigned": {
+  "Enabled": true,
+  "RenewBefore": "30.00:00:00",
+  "RenewalInterval": "24:00:00",
+  "StartupDelay": "00:01:00"
+}
+```
+
+`Enabled: true` is the default (self-signed renewal is purely local — no rate limits or external deps). Flip to `false` to disable the worker and rotate manually.
+
+To regenerate in place on demand (same id, fresh key, fresh expiry):
 
 - UI: `/certificates` → **Regenerate** on any self-signed cert.
 - API: `POST /api/certificates/{id}/regenerate`.
-
-The SNI cache hot-swaps the new key as soon as the regenerated material lands on disk — clients just see a new cert on their next handshake.
 
 > **Heads up:** clients need to trust the cert (import into the OS/browser trust store, or accept the warning). Self-signed is fine for internal use; it's not a substitute for a publicly-rooted CA.
 
@@ -535,7 +548,6 @@ See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifet
 - **`AuthorizationPolicy` on `Application` is a placeholder field.** Per-route ASP.NET Core authorization policies are not wired yet.
 - **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for self-signed wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
 - **Hostname changes on `External`-managed apps are rejected.** v1 only re-issues with the original hostnames; to change them, switch to `Manual` (or `Internal`), or delete and recreate. Self-signed (`Internal`) regenerates in place on hostname change.
-- **Self-signed certs are not auto-rotated.** Regeneration is a manual user action (UI button or `POST /api/certificates/{id}/regenerate`).
 - **Offload and passthrough must live on different ports.** Kestrel cannot host both an HTTPS-terminating endpoint and a raw-TCP `ConnectionHandler` on the same listener. If single-port unified TLS routing matters to you, that's a future design topic.
 
 ## Testing
