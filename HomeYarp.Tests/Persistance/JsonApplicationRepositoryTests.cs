@@ -134,6 +134,55 @@ public class JsonApplicationRepositoryTests
     }
 
     [Fact]
+    public async Task RoundTrip_PreservesTransformsHealthCheckAndHttpRequest()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var app = ApplicationFactory.Create(name: "advanced", routeHosts: new[] { "x.lan" });
+        app.Routes[0].Transforms = new List<RouteTransform>
+        {
+            new() { ["PathSet"] = "/api/v2" },
+            new() { ["RequestHeader"] = "X-User", ["Set"] = "anon" }
+        };
+        app.Cluster.HealthCheck = new HealthCheckConfiguration
+        {
+            Active = new ActiveHealthCheckConfiguration
+            {
+                Enabled = true,
+                Interval = TimeSpan.FromSeconds(30),
+                Path = "/healthz"
+            },
+            Passive = new PassiveHealthCheckConfiguration
+            {
+                Enabled = true,
+                Policy = "TransportFailureRate",
+                ReactivationPeriod = TimeSpan.FromMinutes(2)
+            }
+        };
+        app.Cluster.HttpRequest = new HttpRequestConfiguration
+        {
+            ActivityTimeout = TimeSpan.FromSeconds(45),
+            Version = "2.0",
+            VersionPolicy = "RequestVersionExact",
+            AllowResponseBuffering = false
+        };
+
+        await repo.AddAsync(app);
+
+        // Simulate restart: spin up a fresh repo against the same directory.
+        var fresh = NewRepo(dir.Path);
+        var loaded = await fresh.GetByIdAsync(app.Id);
+
+        loaded.ShouldNotBeNull();
+        loaded!.Routes[0].Transforms!.Count.ShouldBe(2);
+        loaded.Routes[0].Transforms![0]["PathSet"].ShouldBe("/api/v2");
+        loaded.Cluster.HealthCheck!.Active!.Path.ShouldBe("/healthz");
+        loaded.Cluster.HealthCheck.Passive!.ReactivationPeriod.ShouldBe(TimeSpan.FromMinutes(2));
+        loaded.Cluster.HttpRequest!.Version.ShouldBe("2.0");
+        loaded.Cluster.HttpRequest.AllowResponseBuffering.ShouldBe(false);
+    }
+
+    [Fact]
     public async Task EnsureLoaded_PicksUpFilesWrittenByAnotherInstance()
     {
         using var dir = new TempDirectory();

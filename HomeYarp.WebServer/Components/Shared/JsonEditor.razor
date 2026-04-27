@@ -1,0 +1,71 @@
+@using BlazorMonaco
+@using BlazorMonaco.Editor
+
+<div class="json-editor-wrap" style="height:@Height">
+    <StandaloneCodeEditor @ref="_editor"
+                          Id="@Id"
+                          ConstructionOptions="BuildOptions"
+                          OnDidInit="OnEditorInit"
+                          OnDidChangeModelContent="OnContentChanged"
+                          CssClass="json-editor" />
+</div>
+
+@code {
+    [Parameter] public string Id { get; set; } = "json-editor";
+
+    [Parameter] public string Value { get; set; } = "{}";
+
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+
+    [Parameter] public string Height { get; set; } = "500px";
+
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private StandaloneCodeEditor? _editor;
+    private string? _lastSet;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Push external Value updates into the editor (e.g. switching from Simple → Advanced
+        // re-serializes _model and assigns a new Value; reflect it in the editor).
+        if (_editor is not null && Value != _lastSet)
+        {
+            _lastSet = Value;
+            await _editor.SetValue(Value ?? string.Empty);
+        }
+    }
+
+    private StandaloneEditorConstructionOptions BuildOptions(StandaloneCodeEditor _) => new()
+    {
+        AutomaticLayout = true,
+        Language = "json",
+        Theme = "vs-dark",
+        Value = Value,
+        ReadOnly = ReadOnly,
+        FormatOnPaste = true,
+        FormatOnType = true,
+        TabSize = 2,
+        InsertSpaces = true,
+        WordWrap = "on",
+        Minimap = new EditorMinimapOptions { Enabled = false },
+        ScrollBeyondLastLine = false,
+        FontSize = 13,
+        RenderLineHighlight = "all",
+        BracketPairColorization = new BracketPairColorizationOptions { Enabled = true }
+    };
+
+    private Task OnEditorInit()
+    {
+        _lastSet = Value;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnContentChanged(ModelContentChangedEvent _)
+    {
+        if (_editor is null) return;
+        var text = await _editor.GetValue();
+        _lastSet = text;
+        Value = text;
+        await ValueChanged.InvokeAsync(text);
+    }
+}

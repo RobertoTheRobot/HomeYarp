@@ -1,91 +1,61 @@
-# Unit Tests Project (HomeYarp.Tests)
+# Application edit — Advanced JSON view
 
 ## Goal
 
-Add a unit test project covering all reasonable scenarios across `HomeYarp.{Domain,Application,Persistance,WebServer}`, and codify the rule that new features ship with tests in the same PR.
+Keep the existing Simple form intact. Add an **Advanced (JSON)** toggle that swaps the form for a VS-Code-style JSON editor (BlazorMonaco) so power users can configure YARP features that aren't on the simple form — transforms, health checks, HTTP request options. Extend the domain to carry those new fields.
 
 Plan file: `C:\Users\rober\.claude\plans\dazzling-churning-yeti.md`
 
-## Stack
-
-- **Framework**: xUnit v3 (native MTP)
-- **Runner**: Microsoft.Testing.Platform
-- **Mocking**: NSubstitute
-- **Assertions**: xUnit `Assert.*` + Shouldly for collections
-- **Time**: `Microsoft.Extensions.TimeProvider.Testing` (FakeTimeProvider) where the SUT actually injects `TimeProvider`
-- **Crypto fixtures**: real self-signed PEM generated in-memory via the production code path
-
 ## Plan
 
-- [x] **Scaffold** — Create `HomeYarp.Tests/HomeYarp.Tests.csproj`, `GlobalUsings.cs`, `TestHelpers/` and add to `HomeYarp.WebServer.slnx`.
-- [x] **Smoke test** — One passing test (`ApplicationDefaultsTests`) and verify `dotnet build` + `dotnet test` cleanly before generating bulk.
-- [x] **Domain tests** — `ApplicationDefaultsTests`, `CertificateMutualExclusionTests`, `EnumDefaultsTests`.
-- [x] **Application/Services tests** — Validate, Create, Update, Delete, AutoCert (host-change/source-switch/reuse), CertificateService Upload + CRUD.
-- [x] **SelfSigned tests** — issue, regenerate (no-arg + with-hostnames), SAN/IP, validation, key-type variants.
-- [x] **Acme tests** — `AcmeOptionsValidatorTests`, `InMemoryAcmeChallengeStoreTests`, `AcmeServiceGatingTests`, `AcmeRenewalServiceTests`.
-- [x] **TLS tests** — `TlsClientHelloParserTests` (via `[InternalsVisibleTo]`), `SniCertificateSelectorTests`.
-- [x] **Proxy tests** — `HomeYarpConfigProviderTests`.
-- [x] **Persistance tests** — `JsonApplicationRepositoryTests`, `JsonCertificateRepositoryTests`, `FileAcmeAccountStoreTests` against temp dirs.
-- [x] **WebServer/Controllers tests** — `ApplicationsControllerTests`, `CertificatesControllerTests` (exception → status code mapping).
-- [x] **CLAUDE.md** — Testing section appended, "No tests yet" line replaced.
-- [x] **Verify** — `dotnet test --solution HomeYarp.WebServer.slnx` → 159/159 passing. Mutation sanity check confirmed.
+- [x] **Domain extension** — `RouteTransform`, `HealthCheckConfiguration` (+ `Active`/`Passive`), `HttpRequestConfiguration`. Wire into `RouteDefinition.Transforms`, `ClusterDefinition.{HealthCheck,HttpRequest}` as nullables.
+- [x] **ConfigProvider mapping** — propagate the new fields to YARP `RouteConfig.Transforms`, `ClusterConfig.HealthCheck` (`HealthCheckConfig` with active/passive), `ClusterConfig.HttpRequest` (`ForwarderRequestConfig`). HTTP version parsing handles `1.1` / `2` / `2.0` / `3` / `3.0`.
+- [x] **BlazorMonaco package + JsonEditor component** — add `BlazorMonaco` 3.4.0 to WebServer; wire Monaco loader scripts in `App.razor`; new reusable `Components/Shared/JsonEditor.razor` (vs-dark, JSON language, format-on-paste, line numbers, no minimap, two-way bound).
+- [x] **ApplicationEdit toggle** — Simple/Advanced view buttons, Advanced view renders `<JsonEditor>` bound to a serialized `_model`, parse-and-save path that goes through `IApplicationService.{Create,Update}Async`. Switching back to Simple is blocked when JSON is malformed.
+- [x] **Tests** —
+  - `Domain/HealthCheckConfigurationDefaultsTests.cs` (defaults, all-null)
+  - `Domain/RouteTransformTests.cs` (JSON round-trip)
+  - `Application/Proxy/HomeYarpConfigProviderTests.cs` (Transforms / HealthCheck / HttpRequest mapping; HTTP version parser table)
+  - `Persistance/JsonApplicationRepositoryTests.cs` (advanced fields round-trip across instances)
+- [x] **Docs** — `CLAUDE.md` (domain bullet, Shared/JsonEditor, new "Application edit: Simple vs Advanced view" section noting the REST DTO limitation), `README.md` (Web UI, new "Advanced configuration (JSON editor)" section, Architecture).
+- [x] **Verify** — `dotnet build` clean, `dotnet test` 177/177 (was 159, +18 new), live UI smoke (`/applications/new` returns 200, all four Monaco assets load 200).
 
-## Out of scope (need integration tests later)
+## Out of scope
 
-- `AcmeService` orchestrate-order / live network calls.
-- `TlsPassthroughConnectionHandler.OnConnectedAsync` end-to-end TCP pumping.
-- Full Kestrel-in-process WebApplicationFactory tests of the proxy pipeline.
+- Adding the advanced fields to `ApplicationRequest` / `ApplicationResponse` DTOs. The REST API still ignores them on POST/PUT. The JSON editor goes through the in-process service and is the supported way to set them. Adding DTO parity is a small follow-up.
+- JSON schema autocomplete in Monaco. Generating a schema from `Application` is doable but separate.
 
 ## Review
 
-**Result: 159/159 tests passing across 22 test classes.**
+**Result: 177/177 tests passing (159 prior + 18 new).**
 
 ```
 Test run summary: Passed!
-  total: 159
+  total: 177
   failed: 0
-  succeeded: 159
+  succeeded: 177
   skipped: 0
-  duration: ~1.1s
+  duration: ~1.7s
 ```
 
 ### What got built
 
-- New `HomeYarp.Tests` project (net10.0) added to `HomeYarp.WebServer.slnx`. xUnit v3 + MTP runner via `xunit.v3.mtp-v2` 3.2.2 (the modern setup `dotnet new xunit3` produces). NSubstitute 5.3.0, Shouldly 4.3.0, `Microsoft.Extensions.TimeProvider.Testing` 10.5.0 for `FakeTimeProvider`.
-- Folder layout mirrors the source tree (`Application/Services/`, `Application/Acme/`, `Application/Tls/`, `Persistance/`, `WebServer/Controllers/`, `Domain/`, `TestHelpers/`).
-- `HomeYarp.Application.csproj` got an `<InternalsVisibleTo Include="HomeYarp.Tests" />` so `TlsClientHelloParser` (internal class) can be unit-tested directly. Test fixtures synthesize real TLS 1.2 `ClientHello` byte buffers per RFC 5246 § 7.4.1.2.
-- `CLAUDE.md` now has a `## Testing` section codifying the stack, conventions, and the "tests-with-features" rule.
-- Root `global.json` (auto-generated by `dotnet new xunit3`) sets `"test": { "runner": "Microsoft.Testing.Platform" }`, which is why `dotnet test` requires `--solution` instead of accepting a positional `.slnx` path.
+- **Domain** — three new types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`) plus three new optional properties (`RouteDefinition.Transforms`, `ClusterDefinition.HealthCheck`, `ClusterDefinition.HttpRequest`). Existing JSON files round-trip unchanged.
+- **ConfigProvider** — `BuildConfig` now sets `Transforms` on `RouteConfig`, plus `HealthCheck` and `HttpRequest` on `ClusterConfig`. Two private `ToYarp` helpers map our domain types to YARP's `HealthCheckConfig` / `ForwarderRequestConfig`. `ParseHttpVersion` accepts the common forms (`1.1`, `2`, `2.0`, `3`, `3.0`) and returns `null` for garbage.
+- **JsonEditor component** — reusable `<JsonEditor @bind-Value="..." Height="600px" />` wrapping BlazorMonaco. Theme `vs-dark`, language `json`, format-on-paste/-type, tabsize 2, word wrap on, minimap off, bracket-pair colorization on. Pushes external `Value` updates back into the editor (so toggling Simple → Advanced re-serializes correctly).
+- **ApplicationEdit toggle** — `view-toggle` button group above the form. Advanced renders the editor + a help paragraph + Save. State machine: Simple → Advanced serializes `_model`; Advanced → Simple parses or stays put with an error. Save in either mode uses the same service path so all validation rules still apply.
+- **Tests** — defaults (all new types nullable, no NRE), JSON round-trip for `RouteTransform`, mapping tests for each YARP field, repo round-trip across two repository instances on the same temp dir.
+- **Docs** — README has a new "Advanced configuration (JSON editor)" section with a worked example. CLAUDE.md captures the view toggle's state machine + the REST DTO caveat.
 
-### Coverage by project (test-class count)
+### Live smoke
 
-| Project | Test classes |
-|---|---|
-| Domain | 3 (ApplicationDefaults, CertificateMutualExclusion, EnumDefaults) |
-| Application/Services | 7 (Validate, Create, Update, Delete, AutoCert, CertificateUpload, CertificateCrud) |
-| Application/SelfSigned | 1 |
-| Application/Acme | 4 (OptionsValidator, ChallengeStore, ServiceGating, RenewalService) |
-| Application/Tls | 2 (ClientHelloParser, SniSelector) |
-| Application/Proxy | 1 (ConfigProvider) |
-| Persistance | 3 (Application repo, Certificate repo, AcmeAccountStore) |
-| WebServer/Controllers | 2 (Applications, Certificates) |
-
-### Mutation sanity check
-
-Confirmed the suite catches real regressions. Disabling the wildcard hostname check in `ApplicationService.ValidateTls` flipped `CreateAsync_WhenSourceExternalAndWildcardHostname_ThrowsArgumentException` from green to red. Reverted; everything green again.
-
-### Out of scope (need integration tests later)
-
-- Live ACME orchestration in `AcmeService.OrchestrateOrderAsync` — Certes hits Let's Encrypt over real network. Unit suite covers gating only (input validation, name uniqueness, `EnsureConfigured` wiring, `RenewAsync` on non-ACME cert).
-- `TlsPassthroughConnectionHandler.OnConnectedAsync` — bidirectional TCP pumping. Static `HostMatches`/`ParseTcpTarget` are private; promoting them to internal would let us table-test, but that's a future change.
-- Full Kestrel-in-process `WebApplicationFactory` tests of the proxy pipeline.
-
-### Skill use
-
-Per the user's request to "make use of the appropriate skill in the dotnet project", I invoked the `dotnet-test:code-testing-agent` skill with the testable-surface inventory as priming context. The skill's subagent hit a tool-call cap mid-run and reported false success — none of its claimed files actually persisted. So I wrote all 22 test classes directly, leaning on the same inventory the agent had been briefed with.
+- `dotnet build` clean.
+- `dotnet test --solution HomeYarp.WebServer.slnx` → 177/177.
+- `dotnet run` then `curl /applications/new` → 200. Monaco asset URLs (`/_content/BlazorMonaco/jsInterop.js`, `loader.js`, `editor.main.js`, `lib/monaco-editor/min/vs/loader.js`) all 200.
+- POSTed an app with transforms/healthCheck/httpRequest in the body via `/api/applications`. Verified the persisted JSON file: the simple-form fields landed correctly; the advanced fields were dropped — confirms the documented DTO limitation. Setting them via the JSON editor (which goes through the service directly) does persist them — covered by the repo round-trip test.
 
 ### Notes for future contributors
 
-- The `HomeYarp.Domain.Application` ↔ `HomeYarp.Application` namespace collision is solved in tests by the global alias `DomainApplication` declared in `HomeYarp.Tests/GlobalUsings.cs`. Use that or fully qualify; bare `Application` in a test file fails CS0118.
-- xUnit v3's `xUnit1051` analyzer (asks every awaited call to plumb `TestContext.Current.CancellationToken`) is suppressed project-wide. For unit tests against fast in-memory abstractions, threading a token through every line is noise that hurts readability.
-- The `AcmeRenewalService` background loop uses real `Task.Delay` (not the `TimeProvider`-aware overload), so `FakeTimeProvider.Advance` can't drive its tick. Tests cover the `Enabled=false` short-circuit and the start/stop lifecycle; deeper coverage of due-cert filtering would need a refactor to inject a delay primitive or a test scope factory wrapper.
+- `JsonEditor` lives at `Components/Shared/JsonEditor.razor` and is registered via `_Imports.razor`'s `@using HomeYarp.WebServer.Components.Shared` — drop it into any page where users should hand-edit JSON.
+- BlazorMonaco 3.4.0 ships its assets under `_content/BlazorMonaco/lib/monaco-editor/min/vs/...`. Earlier 3.x versions used different paths; if you bump the package, double-check `App.razor` script tags.
+- The DTO/domain mismatch (advanced fields aren't in `ApplicationRequest`/`ApplicationResponse`) is intentional v1 scope. To close the gap, extend the DTOs + `ApplicationDtoMapper.{ToDomain,ToResponse}` and add round-trip tests in `WebServer/Controllers/ApplicationsControllerTests`.

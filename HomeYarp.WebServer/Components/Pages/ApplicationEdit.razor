@@ -1,5 +1,6 @@
 @page "/applications/new"
 @page "/applications/{Id:guid}"
+@using System.Text.Json
 @using HomeYarp.Application.Acme
 @using Microsoft.Extensions.Options
 @inject IApplicationService Service
@@ -25,6 +26,41 @@ else if (_notFound)
 }
 else
 {
+    <div class="view-toggle">
+        <button type="button"
+                class="view-toggle-btn @(_view == ViewMode.Simple ? "active" : null)"
+                @onclick="SwitchToSimple">Simple</button>
+        <button type="button"
+                class="view-toggle-btn @(_view == ViewMode.Advanced ? "active" : null)"
+                @onclick="SwitchToAdvanced">Advanced (JSON)</button>
+    </div>
+
+    @if (_view == ViewMode.Advanced)
+    {
+        <div class="advanced-view">
+            <p class="muted">
+                Edit the application's JSON directly. Supports everything in the domain — including
+                YARP transforms, active/passive health checks, and per-cluster HTTP request options
+                that aren't exposed in the simple form.
+            </p>
+            <JsonEditor @bind-Value="_jsonBuffer" Height="600px" />
+            @if (!string.IsNullOrEmpty(_jsonError))
+            {
+                <div class="error">@_jsonError</div>
+            }
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="error">@_error</div>
+            }
+            <div class="form-actions">
+                <button type="button" class="btn primary" disabled="@_saving" @onclick="SaveAdvancedAsync">
+                    @(_saving ? "Saving…" : "Save")
+                </button>
+            </div>
+        </div>
+    }
+    else
+    {
     <EditForm Model="_model" OnValidSubmit="SaveAsync" FormName="application-edit">
         <fieldset>
             <legend>Identity</legend>
@@ -190,10 +226,19 @@ else
             <button type="submit" class="btn primary" disabled="@_saving">@(_saving ? "Saving…" : "Save")</button>
         </div>
     </EditForm>
+    }
 }
 
 @code {
     [Parameter] public Guid? Id { get; set; }
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
+    private enum ViewMode { Simple, Advanced }
 
     private HomeYarp.Domain.Application _model = NewModel();
     private IReadOnlyList<HomeYarp.Domain.Certificate> _certificates = Array.Empty<HomeYarp.Domain.Certificate>();
@@ -203,6 +248,9 @@ else
     private bool _saving;
     private bool _acmeReady;
     private string? _error;
+    private ViewMode _view = ViewMode.Simple;
+    private string _jsonBuffer = "{}";
+    private string? _jsonError;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -257,6 +305,94 @@ else
         finally
         {
             _saving = false;
+        }
+    }
+
+    private void SwitchToAdvanced()
+    {
+        if (_view == ViewMode.Advanced) return;
+        _jsonBuffer = JsonSerializer.Serialize(_model, JsonOptions);
+        _jsonError = null;
+        _error = null;
+        _view = ViewMode.Advanced;
+    }
+
+    private void SwitchToSimple()
+    {
+        if (_view == ViewMode.Simple) return;
+        if (!TryParseJsonBuffer(out var parsed, out var error))
+        {
+            _jsonError = $"Fix the JSON before switching to Simple: {error}";
+            return;
+        }
+        _model = parsed!;
+        _jsonError = null;
+        _error = null;
+        _view = ViewMode.Simple;
+    }
+
+    private async Task SaveAdvancedAsync()
+    {
+        _saving = true;
+        _error = null;
+        _jsonError = null;
+
+        if (!TryParseJsonBuffer(out var parsed, out var parseError))
+        {
+            _jsonError = parseError;
+            _saving = false;
+            return;
+        }
+
+        try
+        {
+            // Preserve identity for an update — the form's URL says which app this is.
+            if (_isNew)
+            {
+                var created = await Service.CreateAsync(parsed!);
+                _model = created;
+                Nav.NavigateTo("applications");
+            }
+            else
+            {
+                var updated = await Service.UpdateAsync(Id!.Value, parsed!);
+                _model = updated;
+                Nav.NavigateTo("applications");
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private bool TryParseJsonBuffer(out HomeYarp.Domain.Application? parsed, out string? error)
+    {
+        parsed = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(_jsonBuffer))
+        {
+            error = "JSON is empty.";
+            return false;
+        }
+        try
+        {
+            parsed = JsonSerializer.Deserialize<HomeYarp.Domain.Application>(_jsonBuffer, JsonOptions);
+            if (parsed is null)
+            {
+                error = "JSON deserialized to null.";
+                return false;
+            }
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            error = ex.Message;
+            return false;
         }
     }
 

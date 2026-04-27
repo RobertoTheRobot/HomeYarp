@@ -2,6 +2,7 @@ using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
 using Microsoft.Extensions.Primitives;
 using Yarp.ReverseProxy.Configuration;
+using Yarp.ReverseProxy.Forwarder;
 
 namespace HomeYarp.Application.Proxy;
 
@@ -68,7 +69,9 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
             {
                 ClusterId = clusterId,
                 LoadBalancingPolicy = app.Cluster.LoadBalancingPolicy,
-                Destinations = destinations
+                Destinations = destinations,
+                HealthCheck = ToYarp(app.Cluster.HealthCheck),
+                HttpRequest = ToYarp(app.Cluster.HttpRequest)
             });
 
             for (var i = 0; i < app.Routes.Count; i++)
@@ -87,12 +90,70 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
                         Hosts = r.Hosts.Count > 0 ? r.Hosts : null,
                         Path = r.Path,
                         Methods = r.Methods
-                    }
+                    },
+                    Transforms = r.Transforms?
+                        .Select(t => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(t))
+                        .ToList()
                 });
             }
         }
 
         return new HomeYarpConfig(routes, clusters);
+    }
+
+    private static HealthCheckConfig? ToYarp(HealthCheckConfiguration? src)
+    {
+        if (src is null) return null;
+        return new HealthCheckConfig
+        {
+            Active = src.Active is null ? null : new ActiveHealthCheckConfig
+            {
+                Enabled = src.Active.Enabled,
+                Interval = src.Active.Interval,
+                Timeout = src.Active.Timeout,
+                Policy = src.Active.Policy,
+                Path = src.Active.Path,
+                Query = src.Active.Query
+            },
+            Passive = src.Passive is null ? null : new PassiveHealthCheckConfig
+            {
+                Enabled = src.Passive.Enabled,
+                Policy = src.Passive.Policy,
+                ReactivationPeriod = src.Passive.ReactivationPeriod
+            }
+        };
+    }
+
+    private static ForwarderRequestConfig? ToYarp(HttpRequestConfiguration? src)
+    {
+        if (src is null) return null;
+        return new ForwarderRequestConfig
+        {
+            ActivityTimeout = src.ActivityTimeout,
+            Version = ParseHttpVersion(src.Version),
+            VersionPolicy = src.VersionPolicy switch
+            {
+                "RequestVersionExact" => System.Net.Http.HttpVersionPolicy.RequestVersionExact,
+                "RequestVersionOrHigher" => System.Net.Http.HttpVersionPolicy.RequestVersionOrHigher,
+                "RequestVersionOrLower" => System.Net.Http.HttpVersionPolicy.RequestVersionOrLower,
+                _ => null
+            },
+            AllowResponseBuffering = src.AllowResponseBuffering
+        };
+    }
+
+    private static Version? ParseHttpVersion(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        // Accept "1.1", "2", "2.0", "3", "3.0".
+        return raw.Trim() switch
+        {
+            "1.0" => System.Net.HttpVersion.Version10,
+            "1.1" => System.Net.HttpVersion.Version11,
+            "2" or "2.0" => System.Net.HttpVersion.Version20,
+            "3" or "3.0" => System.Net.HttpVersion.Version30,
+            _ => Version.TryParse(raw, out var v) ? v : null
+        };
     }
 
     public void Dispose()

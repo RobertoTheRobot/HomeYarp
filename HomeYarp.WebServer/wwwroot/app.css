@@ -196,6 +196,42 @@ label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
 
+.view-toggle {
+    display: inline-flex;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--panel);
+}
+.view-toggle-btn {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font: inherit;
+    transition: background 0.15s, color 0.15s;
+}
+.view-toggle-btn + .view-toggle-btn { border-left: 1px solid var(--border); }
+.view-toggle-btn:hover { color: var(--text); }
+.view-toggle-btn.active { background: var(--accent); color: var(--bg); }
+
+.advanced-view {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+}
+.json-editor-wrap {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 0.5rem 0 1rem;
+}
+.json-editor { height: 100%; }
+
 @media (max-width: 720px) {
     .page { grid-template-columns: 1fr; }
     .nav { border-right: none; border-bottom: 1px solid var(--border); }

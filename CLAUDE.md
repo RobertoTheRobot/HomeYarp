@@ -28,7 +28,7 @@ OpenAPI docs are available at `/openapi` in Development mode. Sample HTTP reques
 
 Clean Architecture targeting .NET 10, four production projects plus a test project:
 
-- **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
+- **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, advanced types (`RouteTransform`, `HealthCheckConfiguration` + `Active`/`Passive`, `HttpRequestConfiguration`), and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
 - **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` (now also owns auto-managed cert lifecycle for Internal/External sources) and `CertificateService`, `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), the `Tls/` namespace (`SniCertificateSelector` — cert callback Kestrel invokes during HTTPS handshake; `TlsPassthroughConnectionHandler` — Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes; `TlsClientHelloParser`), the `Acme/` namespace (`AcmeService`, `AcmeRenewalService`, `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeOptionsValidator`), and the `SelfSigned/` namespace (`ISelfSignedCertificateService`, `SelfSignedCertificateService`). References `Yarp.ReverseProxy`. Depends on Domain only.
 - **HomeYarp.Persistance** — `JsonApplicationRepository` stores one file per app at `{DataRoot}/applications/{id}.json` with atomic temp-file rename writes and an in-memory cache. `JsonCertificateRepository` mirrors that pattern with `{DataRoot}/certificates/{id}.json` (manifest) + `{id}.cert.pem` + `{id}.key.pem`. `HomeYarpDbContext` is a thin façade exposing both repos. `JsonStoreOptions` is bound from `HomeYarp:Storage`. Depends on Application + Domain.
 - **HomeYarp.WebServer** — Composition root. `Program.cs` calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`.
@@ -39,6 +39,7 @@ Blazor surface (interactive server, no separate WASM project):
 - `Components/Routes.razor` — router with `MainLayout` as default.
 - `Components/Layout/{MainLayout,NavMenu}.razor` — shell + sidebar.
 - `Components/Pages/Home.razor` (`/`), `Applications.razor` (`/applications`), `ApplicationEdit.razor` (`/applications/new` and `/applications/{Id:guid}`), `Certificates.razor` (`/certificates`), `CertificateUpload.razor` (`/certificates/upload`), `CertificateGenerate.razor` (`/certificates/generate`), `CertificateRequest.razor` (`/certificates/request`), `Settings.razor` (`/settings`).
+- `Components/Shared/JsonEditor.razor` — reusable BlazorMonaco wrapper (vs-dark, JSON language, format-on-paste, line numbers, no minimap). Two-way bound via `Value` / `ValueChanged`. Used by `ApplicationEdit.razor`'s Advanced view; reusable for future "edit the JSON directly" surfaces.
 - Pages inject `IApplicationService` / `ICertificateService` directly — UI mutations flow through the same path as the controllers, so the repos' change tokens fire and YARP/the SNI selector rebuild without restart.
 - Static assets live under `wwwroot/` (currently `app.css`).
 
@@ -209,6 +210,20 @@ REST surface: `POST /api/certificates/self-signed` issues, `POST /api/certificat
 The auto-managed cert's `Name` is stable at creation — renaming the app doesn't rename the cert. Linkage is by `Tls.CertificateId`, so nothing breaks; the cert just keeps its original `{oldName}-{source}` slug.
 
 `ApplicationService` therefore depends on `IApplicationRepository`, `ICertificateRepository` (for direct delete), `ISelfSignedCertificateService`, `IAcmeService`, and `IOptionsMonitor<AcmeOptions>`. All scoped, all in the same project except the options monitor.
+
+## Application edit: Simple vs Advanced view
+
+`ApplicationEdit.razor` exposes two views, toggled by a control at the top:
+
+- **Simple** (default) — the existing form: Identity, Routes (Hosts/Path/Order, multiple), TLS (Mode/Source/Certificate), Cluster (LoadBalancingPolicy + multiple Destinations).
+- **Advanced (JSON)** — a Monaco editor (BlazorMonaco, `vs-dark`) bound to the full `HomeYarp.Domain.Application` JSON. Use this to set advanced fields the simple form doesn't expose: `routes[].transforms`, `cluster.healthCheck.active`, `cluster.healthCheck.passive`, `cluster.httpRequest`.
+
+State machine:
+- `Simple → Advanced`: serializes `_model` (web-defaults JSON, indented, `JsonStringEnumConverter`) into the editor buffer.
+- `Advanced → Simple`: parses the buffer back into `Application`. If the JSON is malformed, the toggle is blocked and an error message is shown — fix the JSON or stay in Advanced.
+- Save in either mode goes through `IApplicationService.{Create,Update}Async` so all validation rules still apply (name uniqueness, TLS rules, ACME gating, auto-managed cert lifecycle).
+
+**REST API limitation:** the Advanced fields (`transforms`, `healthCheck`, `httpRequest`) are NOT in the `ApplicationRequest` / `ApplicationResponse` DTOs — `ApplicationDtoMapper.ToDomain/ToResponse` doesn't carry them. Setting them via `POST/PUT /api/applications` silently drops them. The Blazor JSON editor bypasses the controllers (it calls the scoped service directly), so it's the intended path for advanced fields. If we ever want full parity, add the new fields to the DTOs + mapper.
 
 ## Listeners
 

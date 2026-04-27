@@ -11,4 +11,7 @@ public sealed class RouteDefinition
     public List<string>? Methods { get; set; }
 
     public int? Order { get; set; }
+
+    /// <summary>YARP route transforms (advanced). One entry per transform — see YARP docs.</summary>
+    public List<RouteTransform>? Transforms { get; set; }
 }

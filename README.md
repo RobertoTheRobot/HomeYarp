@@ -42,6 +42,7 @@ OpenAPI docs are exposed at `http://localhost:5268/openapi/v1.json` in Developme
 
 - `/` — landing page
 - `/applications` — list, create, edit, delete proxied apps
+- `/applications/new` and `/applications/{id}` — **Simple** form for the everyday fields (identity, routes, TLS, cluster) plus an **Advanced (JSON)** toggle that opens a VS-Code-style editor for the full domain JSON, including YARP transforms, health checks, and HTTP request options
 - `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration
 - `/certificates/upload` — paste a PEM cert + key
 - `/certificates/generate` — generate a self-signed certificate
@@ -70,6 +71,54 @@ curl -X POST http://localhost:5268/api/applications \
 ```
 
 The proxy is now reachable at the HTTP listener. Setting your local DNS or a `Host:` header to `grafana.home.lan` forwards the request to `http://192.168.1.50:3000`.
+
+## Advanced configuration (JSON editor)
+
+The simple form covers the everyday cases. For YARP features that aren't on the form — **request/response transforms**, **active and passive health checks**, **per-cluster HTTP request options** (timeout, HTTP version) — flip the **Advanced (JSON)** toggle at the top of the application edit page. You get a Monaco editor (the same component VS Code uses), `vs-dark` theme, JSON syntax highlighting, format-on-paste, and line numbers.
+
+All advanced fields are nullable / optional — leaving them out preserves current behavior.
+
+```jsonc
+{
+  "name": "api",
+  "routes": [
+    {
+      "hosts": ["api.example.com"],
+      "path": "/{**catch-all}",
+      "transforms": [
+        { "PathSet": "/api/v2" },
+        { "RequestHeader": "X-Forwarded-User", "Set": "anonymous" }
+      ]
+    }
+  ],
+  "cluster": {
+    "destinations": [{ "name": "primary", "address": "http://192.168.1.50:3000" }],
+    "healthCheck": {
+      "active": {
+        "enabled": true,
+        "interval": "00:00:30",
+        "timeout": "00:00:05",
+        "policy": "ConsecutiveFailures",
+        "path": "/healthz"
+      },
+      "passive": {
+        "enabled": true,
+        "policy": "TransportFailureRate",
+        "reactivationPeriod": "00:01:00"
+      }
+    },
+    "httpRequest": {
+      "activityTimeout": "00:00:45",
+      "version": "2.0",
+      "versionPolicy": "RequestVersionExact"
+    }
+  }
+}
+```
+
+The editor's Save button parses the JSON, validates via the same service path the simple form uses (so name uniqueness, TLS rules, and auto-managed cert lifecycle still apply), and persists. Switching back to **Simple** is blocked while the JSON is malformed — fix it first.
+
+> The advanced fields (`transforms`, `healthCheck`, `httpRequest`) are not exposed by `POST /api/applications` — the REST DTOs only carry the simple-form fields. The JSON editor goes through the in-process service and is the supported way to set them.
 
 ## Enabling TLS
 
@@ -325,7 +374,7 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
                   └────►  HomeYarp.Persistance  ──►  HomeYarp.Domain
 ```
 
-- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`.
+- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`, plus advanced types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`).
 - `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
 - `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
 - `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, and the `/.well-known/acme-challenge/{token}` endpoint.
