@@ -35,32 +35,29 @@ else
                 @onclick="SwitchToAdvanced">Advanced (JSON)</button>
     </div>
 
-    @if (_view == ViewMode.Advanced)
-    {
-        <div class="advanced-view">
-            <p class="muted">
-                Edit the application's JSON directly. Supports everything in the domain — including
-                YARP transforms, active/passive health checks, and per-cluster HTTP request options
-                that aren't exposed in the simple form.
-            </p>
-            <JsonEditor @bind-Value="_jsonBuffer" Height="600px" />
-            @if (!string.IsNullOrEmpty(_jsonError))
-            {
-                <div class="error">@_jsonError</div>
-            }
-            @if (!string.IsNullOrEmpty(_error))
-            {
-                <div class="error">@_error</div>
-            }
-            <div class="form-actions">
-                <button type="button" class="btn primary" disabled="@_saving" @onclick="SaveAdvancedAsync">
-                    @(_saving ? "Saving…" : "Save")
-                </button>
-            </div>
+    <div class="advanced-view view-pane @(_view == ViewMode.Advanced ? null : "hidden")">
+        <p class="muted">
+            Edit the application's JSON directly. Supports everything in the domain — including
+            YARP transforms, active/passive health checks, and per-cluster HTTP request options
+            that aren't exposed in the simple form.
+        </p>
+        <JsonEditor @bind-Value="_jsonBuffer" Height="600px" />
+        @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_jsonError))
+        {
+            <div class="error">@_jsonError</div>
+        }
+        @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_error))
+        {
+            <div class="error">@_error</div>
+        }
+        <div class="form-actions">
+            <button type="button" class="btn primary" disabled="@_saving" @onclick="SaveAdvancedAsync">
+                @(_saving ? "Saving…" : "Save")
+            </button>
         </div>
-    }
-    else
-    {
+    </div>
+
+    <div class="view-pane @(_view == ViewMode.Simple ? null : "hidden")">
     <EditForm Model="_model" OnValidSubmit="SaveAsync" FormName="application-edit">
         <fieldset>
             <legend>Identity</legend>
@@ -226,7 +223,7 @@ else
             <button type="submit" class="btn primary" disabled="@_saving">@(_saving ? "Saving…" : "Save")</button>
         </div>
     </EditForm>
-    }
+    </div>
 }
 
 @code {

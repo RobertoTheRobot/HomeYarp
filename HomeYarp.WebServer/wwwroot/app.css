@@ -225,12 +225,18 @@ label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
     margin-bottom: 1rem;
 }
 .json-editor-wrap {
+    position: relative;
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
     margin: 0.5rem 0 1rem;
 }
-.json-editor { height: 100%; }
+.json-editor-wrap > .monaco-editor-container {
+    position: absolute;
+    inset: 0;
+}
+
+.view-pane.hidden { display: none; }
 
 @media (max-width: 720px) {
     .page { grid-template-columns: 1fr; }
