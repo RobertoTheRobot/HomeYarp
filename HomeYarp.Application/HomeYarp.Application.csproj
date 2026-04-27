@@ -20,4 +20,8 @@
     <ProjectReference Include="..\HomeYarp.Domain\HomeYarp.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="HomeYarp.Tests" />
+  </ItemGroup>
+
 </Project>

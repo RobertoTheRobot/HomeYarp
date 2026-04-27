@@ -3,4 +3,5 @@
   <Project Path="HomeYarp.Application/HomeYarp.Application.csproj" />
   <Project Path="HomeYarp.Persistance/HomeYarp.Persistance.csproj" />
   <Project Path="HomeYarp.WebServer/HomeYarp.WebServer.csproj" />
+  <Project Path="HomeYarp.Tests/HomeYarp.Tests.csproj" />
 </Solution>

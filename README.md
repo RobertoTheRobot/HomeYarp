@@ -329,6 +329,7 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
 - `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
 - `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
 - `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, and the `/.well-known/acme-challenge/{token}` endpoint.
+- `HomeYarp.Tests` — xUnit v3 unit tests covering all four production projects. See [Testing](#testing).
 
 See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifetimes, validation rules, and design decisions.
 
@@ -340,8 +341,34 @@ See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifet
 - **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for self-signed wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
 - **Hostname changes on `External`-managed apps are rejected.** v1 only re-issues with the original hostnames; to change them, switch to `Manual` (or `Internal`), or delete and recreate. Self-signed (`Internal`) regenerates in place on hostname change.
 - **Self-signed certs are not auto-rotated.** Regeneration is a manual user action (UI button or `POST /api/certificates/{id}/regenerate`).
-- **No automated tests.** Verification is currently manual via the `.http` file and the smoke flow described above.
 - **Offload and passthrough must live on different ports.** Kestrel cannot host both an HTTPS-terminating endpoint and a raw-TCP `ConnectionHandler` on the same listener. If single-port unified TLS routing matters to you, that's a future design topic.
+
+## Testing
+
+Unit tests live in `HomeYarp.Tests` and cover all four production projects. The test layout mirrors the source tree — to find or add a test for `HomeYarp.Application/Services/ApplicationService.cs`, look in `HomeYarp.Tests/Application/Services/`.
+
+```bash
+dotnet test --solution HomeYarp.WebServer.slnx
+```
+
+> The `--solution` flag is required because `global.json` configures Microsoft.Testing.Platform as the runner — `dotnet test HomeYarp.WebServer.slnx` (positional) is rejected by the SDK.
+
+**Stack:** xUnit v3 on Microsoft.Testing.Platform · NSubstitute (mocks) · Shouldly (assertions) · `Microsoft.Extensions.TimeProvider.Testing` (FakeTimeProvider for time-dependent code).
+
+**Conventions:**
+
+- Test names read as a sentence: `Method_Scenario_Expectation` (e.g. `CreateAsync_WhenNameAlreadyExists_ThrowsInvalidOperationException`).
+- Mock the abstractions (`IApplicationRepository`, `ICertificateRepository`, `IAcmeService`, etc.) with NSubstitute; use real concrete types when the implementation is small and side-effect-free (`AcmeOptionsValidator`, `InMemoryAcmeChallengeStore`, JSON repos against a temp directory).
+- Inject `FakeTimeProvider` wherever the SUT takes a `TimeProvider`.
+- Assertions: prefer Shouldly (`.ShouldBe`, `.ShouldThrow<T>`, `.ShouldContain`) over xUnit's `Assert.*`.
+
+**The "tests-with-features" rule:** anything you add to `HomeYarp.{Domain,Application,Persistance,WebServer}/` ships with corresponding tests in `HomeYarp.Tests/` in the same PR. Bug fixes ship with a regression test that fails before and passes after the fix.
+
+**Out of scope for unit tests** (need integration tests, tracked separately):
+
+- Live ACME orchestration in `AcmeService.OrchestrateOrderAsync` — Certes drives real Let's Encrypt traffic. Unit tests cover the gating paths only (input validation, name uniqueness, "renew on a non-ACME cert", `EnsureConfigured` wiring).
+- `TlsPassthroughConnectionHandler.OnConnectedAsync` end-to-end TCP pumping.
+- Full Kestrel-in-process tests (`WebApplicationFactory`) of the proxy pipeline.
 
 ## Development
 
@@ -351,6 +378,9 @@ dotnet watch --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 
 # Build the whole solution
 dotnet build HomeYarp.WebServer.slnx
+
+# Run the unit tests
+dotnet test --solution HomeYarp.WebServer.slnx
 ```
 
 Visual Studio: open `HomeYarp.WebServer.slnx`.

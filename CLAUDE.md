@@ -18,20 +18,21 @@ dotnet run --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 # Run with watch (hot reload)
 dotnet watch --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 
-# Run tests (when test projects exist)
-dotnet test HomeYarp.WebServer.slnx
+# Run tests (HomeYarp.Tests, xUnit v3 + MTP)
+dotnet test --solution HomeYarp.WebServer.slnx
 ```
 
 OpenAPI docs are available at `/openapi` in Development mode. Sample HTTP requests live in `HomeYarp.WebServer/HomeYarp.WebServer.http`.
 
 ## Architecture
 
-Clean Architecture targeting .NET 10, four projects:
+Clean Architecture targeting .NET 10, four production projects plus a test project:
 
 - **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition`, `ClusterDefinition`, `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
 - **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` (now also owns auto-managed cert lifecycle for Internal/External sources) and `CertificateService`, `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), the `Tls/` namespace (`SniCertificateSelector` — cert callback Kestrel invokes during HTTPS handshake; `TlsPassthroughConnectionHandler` — Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes; `TlsClientHelloParser`), the `Acme/` namespace (`AcmeService`, `AcmeRenewalService`, `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeOptionsValidator`), and the `SelfSigned/` namespace (`ISelfSignedCertificateService`, `SelfSignedCertificateService`). References `Yarp.ReverseProxy`. Depends on Domain only.
 - **HomeYarp.Persistance** — `JsonApplicationRepository` stores one file per app at `{DataRoot}/applications/{id}.json` with atomic temp-file rename writes and an in-memory cache. `JsonCertificateRepository` mirrors that pattern with `{DataRoot}/certificates/{id}.json` (manifest) + `{id}.cert.pem` + `{id}.key.pem`. `HomeYarpDbContext` is a thin façade exposing both repos. `JsonStoreOptions` is bound from `HomeYarp:Storage`. Depends on Application + Domain.
 - **HomeYarp.WebServer** — Composition root. `Program.cs` calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`.
+- **HomeYarp.Tests** — xUnit v3 + Microsoft.Testing.Platform unit-test project covering all four production projects. Folder layout mirrors the source tree. References all four production projects; `HomeYarp.Application` declares `<InternalsVisibleTo Include="HomeYarp.Tests" />` so internals like `TlsClientHelloParser` are reachable. See the **Testing** section below.
 
 Blazor surface (interactive server, no separate WASM project):
 - `Components/App.razor` — root document, references `app.css` and `_framework/blazor.web.js`.
@@ -41,7 +42,7 @@ Blazor surface (interactive server, no separate WASM project):
 - Pages inject `IApplicationService` / `ICertificateService` directly — UI mutations flow through the same path as the controllers, so the repos' change tokens fire and YARP/the SNI selector rebuild without restart.
 - Static assets live under `wwwroot/` (currently `app.css`).
 
-Dependency flow: `WebServer → Application/Persistance → Domain`. The solution file (`HomeYarp.WebServer.slnx`) declares all four projects.
+Dependency flow: `WebServer → Application/Persistance → Domain`. `HomeYarp.Tests` references all four. The solution file (`HomeYarp.WebServer.slnx`) declares all five projects.
 
 ## REST API surface
 
@@ -229,14 +230,43 @@ Production deployments would typically map these to 80/443/8443 (or whatever the
 - **TLS offload and passthrough live on separate ports**, not unified on :443. Kestrel's HTTPS pipeline can't coexist with a raw-TCP `ConnectionHandler` on the same listener, so we expose two endpoints. Each app's `Tls.Mode` determines which port it's reachable on.
 - **PEM, not PFX, for cert uploads.** Stored as `{id}.cert.pem` + `{id}.key.pem` next to a JSON manifest holding parsed metadata (subject, issuer, SANs, expiry, thumbprint). The selector roundtrips PEM → in-memory PFX before handing the cert to Kestrel — `X509Certificate2.CreateFromPem` alone produces a cert whose private key Schannel can't see during the handshake.
 - **Private keys are stored unencrypted on disk for v1.** Acceptable for a homelab; encrypting at rest (DPAPI / Data Protection) is a known follow-up.
+- **All code in `HomeYarp.{Domain,Application,Persistance,WebServer}` ships with unit-test coverage.** New features and bug fixes ship with tests in the *same* PR — see the Testing section below for stack and conventions.
 - **`AuthorizationPolicy` on `Application` is a string placeholder** — not yet wired to ASP.NET Core auth. Adding policy registration + binding to YARP routes is the next iteration.
 - **Three certificate sources, one shape on disk.** Manual upload, self-signed, and ACME all produce the same `Certificate` record + `{cert,key}.pem` pair. The `SelfSigned` and `Acme` metadata blocks are mutually exclusive — at most one set; both null means manual upload. The selector and proxy don't care which source produced a cert.
 - **Auto-managed certs are 1:1 with their owning application.** Naming convention `{appName}-{internal|external}` makes them discoverable; ownership is enforced by `ApplicationService` cleaning up on source switch + app delete.
-- **No tests yet.** Verification is currently manual via the `.http` file.
+- **Tests live in `HomeYarp.Tests` and run via `dotnet test --solution HomeYarp.WebServer.slnx`.** See the Testing section below.
 
 ## Naming gotcha
 
 `HomeYarp.Domain.Application` (the domain aggregate) collides with `HomeYarp.Application` (the project namespace) and with `Microsoft.AspNetCore.Builder.WebApplication` in the WebServer host. Razor components and DI registrations almost always need the fully-qualified `HomeYarp.Domain.Application` to disambiguate — see `Components/Pages/Applications.razor` and `ApplicationEdit.razor` for the pattern. New code in `HomeYarp.Application` can use the unqualified `Application` since the namespace `using HomeYarp.Domain;` makes it accessible.
+
+## Testing
+
+`HomeYarp.Tests` (net10.0) covers all four source projects. Tests mirror the source folder layout — to find or add a test for `HomeYarp.Application/Services/ApplicationService.cs`, look in `HomeYarp.Tests/Application/Services/`.
+
+**Stack:** xUnit v3 on Microsoft.Testing.Platform · NSubstitute (mocks) · Shouldly (assertions) · `Microsoft.Extensions.TimeProvider.Testing` (FakeTimeProvider) for time-dependent code.
+
+**Run:**
+```bash
+dotnet test --solution HomeYarp.WebServer.slnx
+```
+(`dotnet test HomeYarp.WebServer.slnx` is rejected by the SDK; pass `--solution` explicitly.)
+
+**Conventions:**
+- Test names read as a sentence: `Method_Scenario_Expectation`, e.g. `CreateAsync_WhenNameAlreadyExists_ThrowsInvalidOperationException`.
+- Mock the abstractions (`IApplicationRepository`, `ICertificateRepository`, `ISelfSignedCertificateService`, `IAcmeService`, `IAcmeAccountStore`, `IAcmeChallengeStore`, etc.) via NSubstitute.
+- Use real concrete types where the implementation is simple and side-effect-free (`AcmeOptionsValidator`, `InMemoryAcmeChallengeStore`, JSON repos against a `TempDirectory`).
+- Inject `FakeTimeProvider` wherever the SUT takes a `TimeProvider` (`SelfSignedCertificateService`, `AcmeService`, `AcmeRenewalService`).
+- Assertions: prefer Shouldly (`.ShouldBe`, `.ShouldThrow<T>`, `.ShouldNotBeNull`, `.ShouldContain`) over xUnit's `Assert.*`.
+- The `HomeYarp.Domain.Application` ↔ `HomeYarp.Application` namespace collision is avoided in tests by the global alias `DomainApplication = HomeYarp.Domain.Application` in `HomeYarp.Tests/GlobalUsings.cs`. Use `DomainApplication` or fully-qualify; bare `Application` will fail with CS0118.
+- `HomeYarp.Application.csproj` declares `<InternalsVisibleTo Include="HomeYarp.Tests" />` so internal types like `TlsClientHelloParser` can be tested directly.
+
+**The "tests-with-features" rule:** anything you add to `HomeYarp.{Domain,Application,Persistance,WebServer}/` ships with corresponding tests in `HomeYarp.Tests/` in the same PR. Bug fixes ship with a regression test that fails before and passes after the fix.
+
+**Out of scope for unit tests** (need integration tests, tracked separately):
+- Live ACME orchestration in `AcmeService.OrchestrateOrderAsync` — Certes drives real Let's Encrypt traffic. Unit tests cover the gating paths only (input validation, name uniqueness, "renew on a non-ACME cert", `EnsureConfigured` wiring).
+- `TlsPassthroughConnectionHandler.OnConnectedAsync` end-to-end TCP pumping. The static `HostMatches` and `ParseTcpTarget` helpers are private — they would need promotion to internal to be unit-testable.
+- Full Kestrel-in-process tests (`WebApplicationFactory`) of the proxy pipeline.
 
 ## Local data
 
