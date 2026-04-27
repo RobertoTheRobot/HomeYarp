@@ -1,16 +1,20 @@
 using System.Security.Cryptography.X509Certificates;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HomeYarp.Application.Services;
 
 public sealed class CertificateService : ICertificateService
 {
     private readonly ICertificateRepository _repository;
+    private readonly ILogger<CertificateService> _logger;
 
-    public CertificateService(ICertificateRepository repository)
+    public CertificateService(ICertificateRepository repository, ILogger<CertificateService>? logger = null)
     {
         _repository = repository;
+        _logger = logger ?? NullLogger<CertificateService>.Instance;
     }
 
     public Task<IReadOnlyList<Certificate>> ListAsync(CancellationToken cancellationToken = default)
@@ -29,6 +33,7 @@ public sealed class CertificateService : ICertificateService
         var existing = await _repository.GetByNameAsync(name, cancellationToken);
         if (existing is not null)
         {
+            _logger.LogWarning("Certificate upload rejected: name '{CertName}' already exists ({ExistingId})", name, existing.Id);
             throw new InvalidOperationException($"A certificate named '{name}' already exists.");
         }
 
@@ -39,6 +44,7 @@ public sealed class CertificateService : ICertificateService
         }
         catch (Exception ex)
         {
+            _logger.LogWarning(ex, "Certificate upload rejected for '{CertName}': invalid PEM material", name);
             throw new ArgumentException($"Invalid PEM certificate or key: {ex.Message}", ex);
         }
 
@@ -64,10 +70,31 @@ public sealed class CertificateService : ICertificateService
             };
 
             await _repository.SaveAsync(cert, material, cancellationToken);
+
+            _logger.LogInformation(
+                "Certificate uploaded: '{CertName}' ({CertId}) subject='{Subject}' issuer='{Issuer}' notAfter={NotAfter:o} sans=[{Sans}]",
+                cert.Name,
+                cert.Id,
+                cert.Subject,
+                cert.Issuer,
+                cert.NotAfter,
+                string.Join(",", sans));
             return cert;
         }
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
-        => _repository.DeleteAsync(id, cancellationToken);
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var existing = await _repository.GetByIdAsync(id, cancellationToken);
+        var removed = await _repository.DeleteAsync(id, cancellationToken);
+        if (removed && existing is not null)
+        {
+            _logger.LogInformation("Certificate deleted: '{CertName}' ({CertId})", existing.Name, existing.Id);
+        }
+        else if (!removed)
+        {
+            _logger.LogDebug("Certificate delete: id {CertId} not found", id);
+        }
+        return removed;
+    }
 }

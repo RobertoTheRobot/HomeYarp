@@ -25,27 +25,38 @@ public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
         var input = connection.Transport.Input;
         var output = connection.Transport.Output;
         var ct = connection.ConnectionClosed;
+        var remote = connection.RemoteEndPoint?.ToString() ?? "unknown";
+
+        _logger.LogDebug("Passthrough connection {ConnectionId} accepted from {Remote}", connection.ConnectionId, remote);
 
         try
         {
             var (sni, recordLength) = await PeekSniAsync(input, ct);
             if (sni is null)
             {
-                _logger.LogWarning("Passthrough connection {Id} aborted: no SNI in ClientHello", connection.ConnectionId);
+                _logger.LogWarning("Passthrough connection {ConnectionId} from {Remote} aborted: no SNI in ClientHello", connection.ConnectionId, remote);
                 return;
             }
 
             var app = await ResolveAppAsync(sni, ct);
             if (app is null)
             {
-                _logger.LogWarning("Passthrough connection {Id} aborted: no passthrough app for SNI '{Sni}'", connection.ConnectionId, sni);
+                _logger.LogWarning(
+                    "Passthrough connection {ConnectionId} from {Remote} aborted: no passthrough app matches SNI '{Sni}'",
+                    connection.ConnectionId,
+                    remote,
+                    sni);
                 return;
             }
 
             var destination = app.Cluster.Destinations.FirstOrDefault();
             if (destination is null)
             {
-                _logger.LogWarning("Passthrough connection {Id} aborted: app '{App}' has no destinations", connection.ConnectionId, app.Name);
+                _logger.LogWarning(
+                    "Passthrough connection {ConnectionId} aborted: app '{AppName}' ({AppId}) has no destinations",
+                    connection.ConnectionId,
+                    app.Name,
+                    app.Id);
                 return;
             }
 
@@ -55,7 +66,15 @@ public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
             await socket.ConnectAsync(host, port, ct);
             await using var backendStream = new NetworkStream(socket, ownsSocket: false);
 
-            _logger.LogInformation("Passthrough {Id}: SNI '{Sni}' -> {Host}:{Port}", connection.ConnectionId, sni, host, port);
+            _logger.LogInformation(
+                "Passthrough {ConnectionId}: SNI '{Sni}' from {Remote} -> app '{AppName}' ({AppId}) backend {Host}:{Port}",
+                connection.ConnectionId,
+                sni,
+                remote,
+                app.Name,
+                app.Id,
+                host,
+                port);
 
             // Replay the buffered ClientHello to the backend.
             var readResult = await input.ReadAsync(ct);
@@ -71,13 +90,20 @@ public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
             var clientToBackend = PumpFromPipeAsync(input, backendStream, ct);
             var backendToClient = PumpFromStreamAsync(backendStream, output, ct);
             await Task.WhenAny(clientToBackend, backendToClient);
+
+            _logger.LogDebug(
+                "Passthrough {ConnectionId} for app '{AppName}' ({AppId}) closed normally",
+                connection.ConnectionId,
+                app.Name,
+                app.Id);
         }
         catch (OperationCanceledException)
         {
+            _logger.LogDebug("Passthrough connection {ConnectionId} cancelled", connection.ConnectionId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Passthrough {Id} failed", connection.ConnectionId);
+            _logger.LogError(ex, "Passthrough connection {ConnectionId} failed", connection.ConnectionId);
         }
         finally
         {

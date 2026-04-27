@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HomeYarp.Tests.WebServer.Controllers;
@@ -18,7 +19,7 @@ public class ApplicationsControllerTests
 
     private ApplicationsController NewController()
     {
-        var controller = new ApplicationsController(_service);
+        var controller = new ApplicationsController(_service, NullLogger<ApplicationsController>.Instance);
 
         // ValidationProblem() needs a ProblemDetailsFactory in the request services.
         var services = new ServiceCollection();

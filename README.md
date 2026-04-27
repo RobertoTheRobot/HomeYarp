@@ -347,6 +347,91 @@ You don't need to copy anything. On cutover:
 - For production, point the listeners at `80` / `443` / `8443` (or wherever your port forwarding lands) and override the `DataRoot` to a stable absolute path. HTTP-01 challenges always arrive on the `Http` listener.
 - ACME settings are read at startup — change them and restart. See [Let's Encrypt automation](#lets-encrypt-automation) above for the full table of knobs.
 
+## Logging
+
+HomeYarp uses **[Serilog](https://serilog.net/)** as its logging provider, plumbed under the standard `ILogger<T>` interface — every service in the four production projects emits structured logs. Routing-related events (YARP config rebuilds, SNI cert binding, TLS passthrough connections, application CRUD, auto-managed cert lifecycle) **always carry the `{AppId}` and `{AppName}`** properties so you can grep by either.
+
+Sample console output on startup:
+
+```
+[21:23:30 INF] HomeYarp.Application.Proxy.HomeYarpConfigProvider Built YARP cluster 'echo-cluster' for app 'echo' (05315e43-319c-421f-9d3f-e6e5152cc03a) with 1 destination(s) and 1 route(s)
+[21:23:30 INF] HomeYarp.Application.Proxy.HomeYarpConfigProvider YARP config built: 2 route(s), 2 cluster(s), 2 application(s) (0 disabled, 0 skipped without destinations)
+[21:23:30 INF] HomeYarp.Application.Acme.AcmeRenewalService ACME renewal worker is disabled (HomeYarp:Acme:Enabled = false).
+```
+
+Plus one structured line per HTTP request via `UseSerilogRequestLogging` (Blazor heartbeat and static-asset paths are demoted to Debug).
+
+### Configuring sinks
+
+The default `appsettings.json` writes only to **Console**. Sinks are activated purely by appearing in `Serilog:WriteTo`. The packages for File and Seq are referenced; nothing fires unless you opt in.
+
+#### File (rolling)
+
+```json
+"Serilog": {
+  "Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.File" ],
+  "WriteTo": [
+    { "Name": "Console" },
+    {
+      "Name": "File",
+      "Args": {
+        "path": "logs/homeyarp-.log",
+        "rollingInterval": "Day",
+        "retainedFileCountLimit": 14,
+        "outputTemplate": "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"
+      }
+    }
+  ]
+}
+```
+
+The `-` in the path name is where Serilog injects the date suffix (`logs/homeyarp-20260427.log`). Adjust `rollingInterval`, `retainedFileCountLimit`, or `fileSizeLimitBytes` per your retention policy.
+
+#### Seq
+
+[Seq](https://datalust.co/seq) is a self-hostable structured-log server with a queryable web UI — popular for home labs because the free tier covers a single user and runs in a single Docker container.
+
+```bash
+docker run --name seq -d -e ACCEPT_EULA=Y -p 5341:80 datalust/seq:latest
+```
+
+```json
+"Serilog": {
+  "Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.Seq" ],
+  "WriteTo": [
+    { "Name": "Console" },
+    {
+      "Name": "Seq",
+      "Args": {
+        "serverUrl": "http://localhost:5341"
+      }
+    }
+  ]
+}
+```
+
+Open `http://localhost:5341` and filter on `AppId = '05315e43-...'` or `AppName = 'echo'` to drill into routing events for one app.
+
+### Log levels
+
+Defaults in `appsettings.json`:
+
+| Source | Level |
+|---|---|
+| Default | `Information` |
+| `Microsoft.AspNetCore` | `Warning` |
+| `Microsoft.Hosting.Lifetime` | `Information` |
+| `Yarp` | `Information` |
+| `HomeYarp` | `Information` |
+
+`appsettings.Development.json` overrides `HomeYarp` → `Debug` so per-route mapping, SNI matches, and reload-cascade events are visible while developing.
+
+To bump a single namespace at runtime, edit `appsettings.json` (or set `Serilog__MinimumLevel__Override__HomeYarp.Application.Proxy=Debug` as an env var) — `Serilog.Settings.Configuration` rereads on file change.
+
+### Adding more sinks
+
+Any sink package in [the Serilog ecosystem](https://github.com/serilog/serilog/wiki/Provided-Sinks) works. Add the NuGet (`<PackageReference Include="Serilog.Sinks.Whatever" />`), append the sink's name to `Serilog:Using`, and add an entry to `Serilog:WriteTo`. No code changes needed — `ReadFrom.Configuration` discovers them at host build time.
+
 ## Storage layout
 
 ```
@@ -377,7 +462,7 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
 - `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`, plus advanced types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`).
 - `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
 - `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
-- `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, and the `/.well-known/acme-challenge/{token}` endpoint.
+- `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, the `/.well-known/acme-challenge/{token}` endpoint, and the **Serilog** logging pipeline (Console default; File and Seq sinks available on demand).
 - `HomeYarp.Tests` — xUnit v3 unit tests covering all four production projects. See [Testing](#testing).
 
 See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifetimes, validation rules, and design decisions.

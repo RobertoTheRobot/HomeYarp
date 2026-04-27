@@ -36,6 +36,13 @@ public sealed class AcmeRenewalService : BackgroundService
             return;
         }
 
+        _logger.LogInformation(
+            "ACME renewal worker starting; startupDelay={StartupDelay} interval={Interval} renewBefore={RenewBefore} directory={Directory}",
+            options.StartupDelay,
+            options.RenewalInterval,
+            options.RenewBefore,
+            options.DirectoryUrl);
+
         try
         {
             await Task.Delay(options.StartupDelay, stoppingToken);
@@ -69,6 +76,8 @@ public sealed class AcmeRenewalService : BackgroundService
                 return;
             }
         }
+
+        _logger.LogInformation("ACME renewal worker stopping");
     }
 
     private async Task RenewDueCertificatesAsync(CancellationToken cancellationToken)
@@ -100,13 +109,27 @@ public sealed class AcmeRenewalService : BackgroundService
         foreach (var cert in due)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                await acme.RenewAsync(cert.Id, cancellationToken);
+                _logger.LogInformation(
+                    "ACME renewal: renewing '{Name}' ({Id}); current expiry {NotAfter:o}",
+                    cert.Name,
+                    cert.Id,
+                    cert.NotAfter);
+                var renewed = await acme.RenewAsync(cert.Id, cancellationToken);
+                sw.Stop();
+                _logger.LogInformation(
+                    "ACME renewal: '{Name}' ({Id}) renewed in {ElapsedMs} ms; new expiry {NotAfter:o}",
+                    renewed.Name,
+                    renewed.Id,
+                    sw.ElapsedMilliseconds,
+                    renewed.NotAfter);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to renew ACME certificate '{Name}' ({Id}); will retry on next tick.", cert.Name, cert.Id);
+                sw.Stop();
+                _logger.LogError(ex, "ACME renewal failed for '{Name}' ({Id}) after {ElapsedMs} ms; will retry on next tick.", cert.Name, cert.Id, sw.ElapsedMilliseconds);
             }
         }
     }

@@ -15,21 +15,25 @@ public sealed class CertificatesController : ControllerBase
     private readonly ICertificateService _service;
     private readonly IAcmeService _acme;
     private readonly ISelfSignedCertificateService _selfSigned;
+    private readonly ILogger<CertificatesController> _logger;
 
     public CertificatesController(
         ICertificateService service,
         IAcmeService acme,
-        ISelfSignedCertificateService selfSigned)
+        ISelfSignedCertificateService selfSigned,
+        ILogger<CertificatesController> logger)
     {
         _service = service;
         _acme = acme;
         _selfSigned = selfSigned;
+        _logger = logger;
     }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<CertificateResponse>>> List(CancellationToken cancellationToken)
     {
         var certs = await _service.ListAsync(cancellationToken);
+        _logger.LogDebug("API list certificates → {Count} result(s)", certs.Count);
         return Ok(certs.Select(CertificateDtoMapper.ToResponse).ToList());
     }
 
@@ -37,12 +41,18 @@ public sealed class CertificatesController : ControllerBase
     public async Task<ActionResult<CertificateResponse>> Get(Guid id, CancellationToken cancellationToken)
     {
         var cert = await _service.GetAsync(id, cancellationToken);
-        return cert is null ? NotFound() : Ok(CertificateDtoMapper.ToResponse(cert));
+        if (cert is null)
+        {
+            _logger.LogDebug("API get certificate {CertId} → 404", id);
+            return NotFound();
+        }
+        return Ok(CertificateDtoMapper.ToResponse(cert));
     }
 
     [HttpPost]
     public async Task<ActionResult<CertificateResponse>> Upload([FromBody] CertificateUploadRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API upload certificate: '{CertName}'", request.Name);
         try
         {
             var material = new CertificateMaterial(request.CertificatePem, request.PrivateKeyPem);
@@ -62,6 +72,7 @@ public sealed class CertificatesController : ControllerBase
     [HttpPost("acme")]
     public async Task<ActionResult<CertificateResponse>> IssueViaAcme([FromBody] AcmeIssueRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API ACME issue: '{CertName}' for [{Hostnames}]", request.Name, string.Join(",", request.Hostnames ?? Array.Empty<string>()));
         try
         {
             var created = await _acme.IssueAsync(request.Name, request.FriendlyName, request.Hostnames ?? Array.Empty<string>(), cancellationToken);
@@ -80,6 +91,12 @@ public sealed class CertificatesController : ControllerBase
     [HttpPost("self-signed")]
     public async Task<ActionResult<CertificateResponse>> IssueSelfSigned([FromBody] SelfSignedIssueRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation(
+            "API self-signed issue: '{CertName}' for [{Hostnames}] keyType={KeyType} validityDays={ValidityDays}",
+            request.Name,
+            string.Join(",", request.Hostnames ?? Array.Empty<string>()),
+            request.KeyType,
+            request.ValidityDays);
         try
         {
             var created = await _selfSigned.IssueAsync(
@@ -104,6 +121,7 @@ public sealed class CertificatesController : ControllerBase
     [HttpPost("{id:guid}/regenerate")]
     public async Task<ActionResult<CertificateResponse>> Regenerate(Guid id, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API regenerate self-signed cert {CertId}", id);
         try
         {
             var regenerated = await _selfSigned.RegenerateAsync(id, cancellationToken);
@@ -122,6 +140,7 @@ public sealed class CertificatesController : ControllerBase
     [HttpPost("{id:guid}/renew")]
     public async Task<ActionResult<CertificateResponse>> Renew(Guid id, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API renew ACME cert {CertId}", id);
         try
         {
             var renewed = await _acme.RenewAsync(id, cancellationToken);
@@ -140,6 +159,7 @@ public sealed class CertificatesController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API delete certificate {CertId}", id);
         var removed = await _service.DeleteAsync(id, cancellationToken);
         return removed ? NoContent() : NotFound();
     }

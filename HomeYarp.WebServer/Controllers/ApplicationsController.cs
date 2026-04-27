@@ -9,16 +9,19 @@ namespace HomeYarp.WebServer.Controllers;
 public sealed class ApplicationsController : ControllerBase
 {
     private readonly IApplicationService _service;
+    private readonly ILogger<ApplicationsController> _logger;
 
-    public ApplicationsController(IApplicationService service)
+    public ApplicationsController(IApplicationService service, ILogger<ApplicationsController> logger)
     {
         _service = service;
+        _logger = logger;
     }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<ApplicationResponse>>> List(CancellationToken cancellationToken)
     {
         var apps = await _service.ListAsync(cancellationToken);
+        _logger.LogDebug("API list applications → {Count} result(s)", apps.Count);
         return Ok(apps.Select(ApplicationDtoMapper.ToResponse).ToList());
     }
 
@@ -26,12 +29,19 @@ public sealed class ApplicationsController : ControllerBase
     public async Task<ActionResult<ApplicationResponse>> Get(Guid id, CancellationToken cancellationToken)
     {
         var app = await _service.GetAsync(id, cancellationToken);
-        return app is null ? NotFound() : Ok(ApplicationDtoMapper.ToResponse(app));
+        if (app is null)
+        {
+            _logger.LogDebug("API get application {AppId} → 404", id);
+            return NotFound();
+        }
+        _logger.LogDebug("API get application {AppId} → '{AppName}'", id, app.Name);
+        return Ok(ApplicationDtoMapper.ToResponse(app));
     }
 
     [HttpPost]
     public async Task<ActionResult<ApplicationResponse>> Create([FromBody] ApplicationRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API create application: '{AppName}'", request.Name);
         try
         {
             var created = await _service.CreateAsync(ApplicationDtoMapper.ToDomain(request), cancellationToken);
@@ -50,6 +60,7 @@ public sealed class ApplicationsController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<ApplicationResponse>> Update(Guid id, [FromBody] ApplicationRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API update application {AppId}: '{AppName}'", id, request.Name);
         try
         {
             var updated = await _service.UpdateAsync(id, ApplicationDtoMapper.ToDomain(request), cancellationToken);
@@ -57,6 +68,7 @@ public sealed class ApplicationsController : ControllerBase
         }
         catch (KeyNotFoundException)
         {
+            _logger.LogWarning("API update application {AppId} → 404 (not found)", id);
             return NotFound();
         }
         catch (ArgumentException ex)
@@ -72,6 +84,7 @@ public sealed class ApplicationsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("API delete application {AppId}", id);
         var removed = await _service.DeleteAsync(id, cancellationToken);
         return removed ? NoContent() : NotFound();
     }

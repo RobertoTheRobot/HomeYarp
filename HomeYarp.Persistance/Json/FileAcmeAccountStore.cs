@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HomeYarp.Application.Acme;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HomeYarp.Persistance.Json;
@@ -14,9 +16,10 @@ public sealed class FileAcmeAccountStore : IAcmeAccountStore
     };
 
     private readonly string _directory;
+    private readonly ILogger<FileAcmeAccountStore> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public FileAcmeAccountStore(IOptions<JsonStoreOptions> options)
+    public FileAcmeAccountStore(IOptions<JsonStoreOptions> options, ILogger<FileAcmeAccountStore>? logger = null)
     {
         var root = options.Value.DataRoot;
         if (!Path.IsPathRooted(root))
@@ -25,6 +28,8 @@ public sealed class FileAcmeAccountStore : IAcmeAccountStore
         }
         _directory = Path.Combine(root, "acme");
         Directory.CreateDirectory(_directory);
+        _logger = logger ?? NullLogger<FileAcmeAccountStore>.Instance;
+        _logger.LogInformation("FileAcmeAccountStore initialized at {Directory}", _directory);
     }
 
     public async Task<AcmeAccountRecord?> LoadAsync(string directoryUrl, CancellationToken cancellationToken = default)
@@ -34,6 +39,7 @@ public sealed class FileAcmeAccountStore : IAcmeAccountStore
         var keyPath = Path.Combine(_directory, $"account.{key}.pem");
         if (!File.Exists(manifestPath) || !File.Exists(keyPath))
         {
+            _logger.LogDebug("ACME account not found for directory {Directory} (key {Key})", directoryUrl, key);
             return null;
         }
 
@@ -47,6 +53,7 @@ public sealed class FileAcmeAccountStore : IAcmeAccountStore
                 return null;
             }
             var pem = await File.ReadAllTextAsync(keyPath, cancellationToken);
+            _logger.LogDebug("ACME account loaded for directory {Directory} (key {Key}, email {Email})", directoryUrl, key, manifest.Email);
             return new AcmeAccountRecord(
                 manifest.DirectoryUrl,
                 manifest.Email,
@@ -84,6 +91,7 @@ public sealed class FileAcmeAccountStore : IAcmeAccountStore
         {
             _gate.Release();
         }
+        _logger.LogInformation("ACME account saved for directory {Directory} (key {Key}, email {Email})", record.DirectoryUrl, key, record.Email);
     }
 
     private static string KeyFor(string directoryUrl)

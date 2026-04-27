@@ -2,6 +2,8 @@ using HomeYarp.Application.Abstractions;
 using HomeYarp.Application.Acme;
 using HomeYarp.Application.SelfSigned;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HomeYarp.Application.Services;
@@ -13,19 +15,22 @@ public sealed class ApplicationService : IApplicationService
     private readonly ISelfSignedCertificateService _selfSigned;
     private readonly IAcmeService _acme;
     private readonly IOptionsMonitor<AcmeOptions> _acmeOptions;
+    private readonly ILogger<ApplicationService> _logger;
 
     public ApplicationService(
         IApplicationRepository repository,
         ICertificateRepository certificates,
         ISelfSignedCertificateService selfSigned,
         IAcmeService acme,
-        IOptionsMonitor<AcmeOptions> acmeOptions)
+        IOptionsMonitor<AcmeOptions> acmeOptions,
+        ILogger<ApplicationService>? logger = null)
     {
         _repository = repository;
         _certificates = certificates;
         _selfSigned = selfSigned;
         _acme = acme;
         _acmeOptions = acmeOptions;
+        _logger = logger ?? NullLogger<ApplicationService>.Instance;
     }
 
     public Task<IReadOnlyList<Domain.Application>> ListAsync(CancellationToken cancellationToken = default)
@@ -36,11 +41,20 @@ public sealed class ApplicationService : IApplicationService
 
     public async Task<Domain.Application> CreateAsync(Domain.Application application, CancellationToken cancellationToken = default)
     {
-        Validate(application);
+        try
+        {
+            Validate(application);
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning("Application create rejected for '{AppName}': {Reason}", application.Name, ex.Message);
+            throw;
+        }
 
         var existing = await _repository.GetByNameAsync(application.Name, cancellationToken);
         if (existing is not null)
         {
+            _logger.LogWarning("Application create rejected: name '{AppName}' already exists ({ExistingId})", application.Name, existing.Id);
             throw new InvalidOperationException($"An application named '{application.Name}' already exists.");
         }
 
@@ -49,12 +63,30 @@ public sealed class ApplicationService : IApplicationService
         application.CreatedAt = DateTimeOffset.UtcNow;
         application.UpdatedAt = application.CreatedAt;
         await _repository.AddAsync(application, cancellationToken);
+
+        _logger.LogInformation(
+            "Application created: '{AppName}' ({AppId}) — enabled={Enabled} routes={RouteCount} dest={DestinationCount} tls=Mode:{TlsMode}/Source:{TlsSource}",
+            application.Name,
+            application.Id,
+            application.Enabled,
+            application.Routes.Count,
+            application.Cluster.Destinations.Count,
+            application.Tls.Mode,
+            application.Tls.Source);
         return application;
     }
 
     public async Task<Domain.Application> UpdateAsync(Guid id, Domain.Application application, CancellationToken cancellationToken = default)
     {
-        Validate(application);
+        try
+        {
+            Validate(application);
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning("Application update rejected for '{AppName}' ({AppId}): {Reason}", application.Name, id, ex.Message);
+            throw;
+        }
 
         var existing = await _repository.GetByIdAsync(id, cancellationToken)
             ?? throw new KeyNotFoundException($"Application '{id}' not found.");
@@ -62,6 +94,11 @@ public sealed class ApplicationService : IApplicationService
         var byName = await _repository.GetByNameAsync(application.Name, cancellationToken);
         if (byName is not null && byName.Id != id)
         {
+            _logger.LogWarning(
+                "Application update rejected for {AppId}: name '{AppName}' already taken by {ConflictingId}",
+                id,
+                application.Name,
+                byName.Id);
             throw new InvalidOperationException($"Another application named '{application.Name}' already exists.");
         }
 
@@ -78,6 +115,16 @@ public sealed class ApplicationService : IApplicationService
         existing.UpdatedAt = DateTimeOffset.UtcNow;
 
         await _repository.UpdateAsync(existing, cancellationToken);
+
+        _logger.LogInformation(
+            "Application updated: '{AppName}' ({AppId}) — enabled={Enabled} routes={RouteCount} dest={DestinationCount} tls=Mode:{TlsMode}/Source:{TlsSource}",
+            existing.Name,
+            existing.Id,
+            existing.Enabled,
+            existing.Routes.Count,
+            existing.Cluster.Destinations.Count,
+            existing.Tls.Mode,
+            existing.Tls.Source);
         return existing;
     }
 
@@ -86,13 +133,24 @@ public sealed class ApplicationService : IApplicationService
         var existing = await _repository.GetByIdAsync(id, cancellationToken);
         if (existing is null)
         {
+            _logger.LogDebug("Application delete: id {AppId} not found", id);
             return false;
         }
 
         var removed = await _repository.DeleteAsync(id, cancellationToken);
         if (removed && existing.Tls.Source != TlsCertificateSource.Manual && existing.Tls.CertificateId is { } certId)
         {
+            _logger.LogInformation(
+                "Application '{AppName}' ({AppId}) deleted — also removing auto-managed certificate {CertId} (source {Source})",
+                existing.Name,
+                existing.Id,
+                certId,
+                existing.Tls.Source);
             await _certificates.DeleteAsync(certId, cancellationToken);
+        }
+        else if (removed)
+        {
+            _logger.LogInformation("Application deleted: '{AppName}' ({AppId})", existing.Name, existing.Id);
         }
         return removed;
     }
@@ -109,12 +167,18 @@ public sealed class ApplicationService : IApplicationService
         // Source switch (Internal↔External, or auto→Manual): drop the previously auto-managed cert.
         if (prevSource != TlsCertificateSource.Manual && prevSource != newSource && prevCertId is { } oldId)
         {
+            _logger.LogInformation(
+                "App '{AppName}' ({AppId}): TLS source changing {From} → {To}; deleting prior auto-managed cert {CertId}",
+                incoming.Name,
+                incoming.Id,
+                prevSource,
+                newSource,
+                oldId);
             await _certificates.DeleteAsync(oldId, cancellationToken);
         }
 
         if (newSource == TlsCertificateSource.Manual)
         {
-            // User-managed: nothing to provision. CertificateId is whatever the request set.
             return;
         }
 
@@ -131,6 +195,12 @@ public sealed class ApplicationService : IApplicationService
             var existingCert = await _certificates.GetByIdAsync(existingId, cancellationToken);
             if (existingCert is not null && SameHostnames(existingCert, newSource, hostnames))
             {
+                _logger.LogDebug(
+                    "App '{AppName}' ({AppId}): hostnames unchanged for {Source}; reusing cert {CertId}",
+                    incoming.Name,
+                    incoming.Id,
+                    newSource,
+                    existingId);
                 incoming.Tls.CertificateId = existingId;
                 return;
             }
@@ -139,25 +209,51 @@ public sealed class ApplicationService : IApplicationService
             {
                 if (newSource == TlsCertificateSource.Internal)
                 {
+                    _logger.LogInformation(
+                        "App '{AppName}' ({AppId}): hostnames changed for Internal; regenerating self-signed cert {CertId} for [{Hostnames}]",
+                        incoming.Name,
+                        incoming.Id,
+                        existingId,
+                        string.Join(",", hostnames));
                     var regen = await _selfSigned.RegenerateAsync(existingId, hostnames, cancellationToken);
                     incoming.Tls.CertificateId = regen.Id;
                     return;
                 }
 
-                // External: hostname re-issue not supported in v1.
+                _logger.LogWarning(
+                    "App '{AppName}' ({AppId}): hostname change rejected for External-managed cert {CertId} — re-issue not supported",
+                    incoming.Name,
+                    incoming.Id,
+                    existingId);
                 throw new InvalidOperationException(
                     "Changing hostnames on an External-managed application is not supported. " +
                     "Delete the application and recreate it, or switch to Manual and pick a different certificate.");
             }
-            // Cert was deleted out from under us; fall through and create fresh.
         }
 
         var certName = BuildCertName(incoming.Name, newSource);
         var friendly = BuildFriendlyName(incoming, newSource);
 
+        _logger.LogInformation(
+            "App '{AppName}' ({AppId}): provisioning {Source} certificate '{CertName}' for [{Hostnames}]",
+            incoming.Name,
+            incoming.Id,
+            newSource,
+            certName,
+            string.Join(",", hostnames));
+
         var created = newSource == TlsCertificateSource.Internal
             ? await _selfSigned.IssueAsync(certName, friendly, hostnames, CertificateKeyType.Ec256, validityDays: 365, cancellationToken)
             : await _acme.IssueAsync(certName, friendly, hostnames, cancellationToken);
+
+        _logger.LogInformation(
+            "App '{AppName}' ({AppId}): provisioned {Source} certificate {CertId} ('{CertName}') valid until {NotAfter:o}",
+            incoming.Name,
+            incoming.Id,
+            newSource,
+            created.Id,
+            created.Name,
+            created.NotAfter);
 
         incoming.Tls.CertificateId = created.Id;
     }

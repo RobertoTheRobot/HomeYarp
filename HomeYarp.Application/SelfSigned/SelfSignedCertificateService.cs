@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HomeYarp.Application.SelfSigned;
 
@@ -13,13 +15,16 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
 
     private readonly ICertificateRepository _certificates;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<SelfSignedCertificateService> _logger;
 
     public SelfSignedCertificateService(
         ICertificateRepository certificates,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger<SelfSignedCertificateService>? logger = null)
     {
         _certificates = certificates;
         _timeProvider = timeProvider;
+        _logger = logger ?? NullLogger<SelfSignedCertificateService>.Instance;
     }
 
     public Task<Certificate> IssueAsync(
@@ -59,10 +64,18 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
 
         if (existing.SelfSigned is null)
         {
+            _logger.LogWarning("Self-signed regenerate rejected: cert '{CertName}' ({CertId}) is not self-signed", existing.Name, existing.Id);
             throw new InvalidOperationException($"Certificate '{existing.Name}' is not self-signed.");
         }
 
         var hosts = (hostnames ?? existing.SelfSigned.Hostnames).ToList();
+        _logger.LogInformation(
+            "Self-signed regenerate starting for '{CertName}' ({CertId}) with hostnames [{Hostnames}], keyType={KeyType}, validityDays={ValidityDays}",
+            existing.Name,
+            existing.Id,
+            string.Join(",", hosts),
+            existing.SelfSigned.KeyType,
+            existing.SelfSigned.ValidityDays);
 
         return await GenerateAndSaveAsync(
             existing.Id,
@@ -88,8 +101,16 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
         var existing = await _certificates.GetByNameAsync(name, cancellationToken);
         if (existing is not null)
         {
+            _logger.LogWarning("Self-signed issue rejected: cert name '{CertName}' already exists ({ExistingId})", name, existing.Id);
             throw new InvalidOperationException($"A certificate named '{name}' already exists.");
         }
+
+        _logger.LogInformation(
+            "Self-signed issue starting for '{CertName}' with hostnames [{Hostnames}], keyType={KeyType}, validityDays={ValidityDays}",
+            name,
+            string.Join(",", hostnames),
+            keyType,
+            validityDays);
 
         return await GenerateAndSaveAsync(
             Guid.NewGuid(),
@@ -152,6 +173,15 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
                 certificate,
                 new CertificateMaterial(certificatePem, privateKeyPem),
                 cancellationToken);
+
+            _logger.LogInformation(
+                "Self-signed cert {Action} for '{CertName}' ({CertId}); thumbprint={Thumbprint} valid {NotBefore:o} → {NotAfter:o}",
+                regenerating ? "regenerated" : "issued",
+                certificate.Name,
+                certificate.Id,
+                certificate.Thumbprint,
+                certificate.NotBefore,
+                certificate.NotAfter);
 
             return certificate;
         }

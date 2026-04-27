@@ -1,6 +1,8 @@
 using System.Text.Json;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 
@@ -14,12 +16,13 @@ public sealed class JsonApplicationRepository : IApplicationRepository
     };
 
     private readonly string _directory;
+    private readonly ILogger<JsonApplicationRepository> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<Guid, Domain.Application> _cache = new();
     private bool _loaded;
     private CancellationTokenSource _reloadCts = new();
 
-    public JsonApplicationRepository(IOptions<JsonStoreOptions> options)
+    public JsonApplicationRepository(IOptions<JsonStoreOptions> options, ILogger<JsonApplicationRepository>? logger = null)
     {
         var root = options.Value.DataRoot;
         if (!Path.IsPathRooted(root))
@@ -28,6 +31,8 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         }
         _directory = Path.Combine(root, "applications");
         Directory.CreateDirectory(_directory);
+        _logger = logger ?? NullLogger<JsonApplicationRepository>.Instance;
+        _logger.LogInformation("JsonApplicationRepository initialized at {Directory}", _directory);
     }
 
     public async Task<IReadOnlyList<Domain.Application>> GetAllAsync(CancellationToken cancellationToken = default)
@@ -85,6 +90,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         {
             _gate.Release();
         }
+        _logger.LogDebug("Application '{AppName}' ({AppId}) persisted to disk", application.Name, application.Id);
         SignalReload();
     }
 
@@ -101,6 +107,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         {
             _gate.Release();
         }
+        _logger.LogDebug("Application '{AppName}' ({AppId}) updated on disk", application.Name, application.Id);
         SignalReload();
     }
 
@@ -108,9 +115,14 @@ public sealed class JsonApplicationRepository : IApplicationRepository
     {
         await EnsureLoadedAsync(cancellationToken);
         bool removed;
+        string? removedName = null;
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if (_cache.TryGetValue(id, out var existing))
+            {
+                removedName = existing.Name;
+            }
             removed = _cache.Remove(id);
             if (removed)
             {
@@ -127,6 +139,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         }
         if (removed)
         {
+            _logger.LogDebug("Application '{AppName}' ({AppId}) removed from disk", removedName, id);
             SignalReload();
         }
         return removed;
@@ -160,12 +173,13 @@ public sealed class JsonApplicationRepository : IApplicationRepository
                         _cache[app.Id] = app;
                     }
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
-                    // Skip malformed files; they'll be flagged by anyone tailing logs once we add logging.
+                    _logger.LogWarning(ex, "Skipping malformed application file '{File}'", file);
                 }
             }
             _loaded = true;
+            _logger.LogInformation("Loaded {Count} application(s) from {Directory}", _cache.Count, _directory);
         }
         finally
         {
@@ -200,5 +214,6 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
         try { oldCts.Cancel(); } catch (ObjectDisposedException) { }
         oldCts.Dispose();
+        _logger.LogDebug("JsonApplicationRepository reload signal fired");
     }
 }

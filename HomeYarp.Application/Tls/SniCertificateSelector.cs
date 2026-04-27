@@ -39,14 +39,13 @@ public sealed class SniCertificateSelector : IDisposable
 
         if (string.IsNullOrWhiteSpace(sni))
         {
-            _logger.LogDebug("SNI selector: empty SNI, no cert returned");
+            _logger.LogDebug("SNI selector: empty SNI on TLS handshake — no cert returned");
             return null;
         }
 
-        _logger.LogDebug("SNI selector: sni='{Sni}', cache hosts=[{Hosts}]", sni, string.Join(",", snapshot.Keys));
-
         if (snapshot.TryGetValue(sni, out var exact))
         {
+            _logger.LogDebug("SNI selector: exact match for '{Sni}' (thumbprint {Thumbprint})", sni, exact.Thumbprint);
             return exact;
         }
 
@@ -56,15 +55,22 @@ public sealed class SniCertificateSelector : IDisposable
             var wildcard = "*." + sni[(dot + 1)..];
             if (snapshot.TryGetValue(wildcard, out var wild))
             {
+                _logger.LogDebug("SNI selector: wildcard '{Wildcard}' matched '{Sni}' (thumbprint {Thumbprint})", wildcard, sni, wild.Thumbprint);
                 return wild;
             }
         }
 
+        _logger.LogWarning(
+            "SNI selector: no certificate for SNI '{Sni}'. Known hosts: [{Hosts}]",
+            sni,
+            string.Join(",", snapshot.Keys));
         return null;
     }
 
     private void Reload()
     {
+        _logger.LogDebug("SNI selector: reload triggered (apps or certs changed)");
+
         var apps = _applications.GetAllAsync().GetAwaiter().GetResult();
         var certs = _certificates.GetAllAsync().GetAwaiter().GetResult();
 
@@ -79,6 +85,12 @@ public sealed class SniCertificateSelector : IDisposable
 
         foreach (var app in apps)
         {
+            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["AppId"] = app.Id,
+                ["AppName"] = app.Name
+            });
+
             if (!app.Enabled || app.Tls.Mode != TlsMode.Offload || app.Tls.CertificateId is null)
             {
                 continue;
@@ -86,6 +98,11 @@ public sealed class SniCertificateSelector : IDisposable
 
             if (!certById.TryGetValue(app.Tls.CertificateId.Value, out var certMeta))
             {
+                _logger.LogWarning(
+                    "SNI selector: app '{AppName}' ({AppId}) references missing certificate {CertId}",
+                    app.Name,
+                    app.Id,
+                    app.Tls.CertificateId);
                 continue;
             }
 
@@ -94,6 +111,12 @@ public sealed class SniCertificateSelector : IDisposable
                 var material = _certificates.GetMaterialAsync(certMeta.Id).GetAwaiter().GetResult();
                 if (material is null)
                 {
+                    _logger.LogWarning(
+                        "SNI selector: certificate {CertId} ({CertName}) for app '{AppName}' ({AppId}) has no PEM material on disk",
+                        certMeta.Id,
+                        certMeta.Name,
+                        app.Name,
+                        app.Id);
                     continue;
                 }
 
@@ -101,9 +124,21 @@ public sealed class SniCertificateSelector : IDisposable
                 {
                     loadedCert = LoadX509(material);
                     loaded[certMeta.Id] = loadedCert;
+                    _logger.LogDebug(
+                        "SNI selector: loaded cert {CertId} ({CertName}) thumbprint={Thumbprint} notAfter={NotAfter:o}",
+                        certMeta.Id,
+                        certMeta.Name,
+                        loadedCert.Thumbprint,
+                        loadedCert.NotAfter);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    _logger.LogError(ex,
+                        "SNI selector: failed to load cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
+                        certMeta.Id,
+                        certMeta.Name,
+                        app.Name,
+                        app.Id);
                     continue;
                 }
             }
@@ -115,6 +150,13 @@ public sealed class SniCertificateSelector : IDisposable
                     if (!string.IsNullOrWhiteSpace(host))
                     {
                         byHost[host] = loadedCert;
+                        _logger.LogDebug(
+                            "SNI selector: bound host '{Host}' → cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
+                            host,
+                            certMeta.Id,
+                            certMeta.Name,
+                            app.Name,
+                            app.Id);
                     }
                 }
             }
@@ -132,6 +174,11 @@ public sealed class SniCertificateSelector : IDisposable
         {
             cert.Dispose();
         }
+
+        _logger.LogInformation(
+            "SNI selector: reload complete — {HostCount} host binding(s), {CertCount} unique cert(s) loaded",
+            byHost.Count,
+            loaded.Count);
     }
 
     private static X509Certificate2 LoadX509(CertificateMaterial material)

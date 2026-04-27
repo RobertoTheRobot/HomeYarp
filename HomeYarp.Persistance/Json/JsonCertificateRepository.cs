@@ -1,6 +1,8 @@
 using System.Text.Json;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 
@@ -15,12 +17,13 @@ public sealed class JsonCertificateRepository : ICertificateRepository
     };
 
     private readonly string _directory;
+    private readonly ILogger<JsonCertificateRepository> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<Guid, Certificate> _cache = new();
     private bool _loaded;
     private CancellationTokenSource _reloadCts = new();
 
-    public JsonCertificateRepository(IOptions<JsonStoreOptions> options)
+    public JsonCertificateRepository(IOptions<JsonStoreOptions> options, ILogger<JsonCertificateRepository>? logger = null)
     {
         var root = options.Value.DataRoot;
         if (!Path.IsPathRooted(root))
@@ -29,6 +32,8 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         }
         _directory = Path.Combine(root, "certificates");
         Directory.CreateDirectory(_directory);
+        _logger = logger ?? NullLogger<JsonCertificateRepository>.Instance;
+        _logger.LogInformation("JsonCertificateRepository initialized at {Directory}", _directory);
     }
 
     public async Task<IReadOnlyList<Certificate>> GetAllAsync(CancellationToken cancellationToken = default)
@@ -102,6 +107,7 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         {
             _gate.Release();
         }
+        _logger.LogDebug("Certificate '{CertName}' ({CertId}) persisted to disk", certificate.Name, certificate.Id);
         SignalReload();
     }
 
@@ -109,9 +115,14 @@ public sealed class JsonCertificateRepository : ICertificateRepository
     {
         await EnsureLoadedAsync(cancellationToken);
         bool removed;
+        string? removedName = null;
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if (_cache.TryGetValue(id, out var existing))
+            {
+                removedName = existing.Name;
+            }
             removed = _cache.Remove(id);
             if (removed)
             {
@@ -130,6 +141,7 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         }
         if (removed)
         {
+            _logger.LogDebug("Certificate '{CertName}' ({CertId}) removed from disk", removedName, id);
             SignalReload();
         }
         return removed;
@@ -163,12 +175,13 @@ public sealed class JsonCertificateRepository : ICertificateRepository
                         _cache[cert.Id] = cert;
                     }
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
-                    // Skip malformed manifests.
+                    _logger.LogWarning(ex, "Skipping malformed certificate manifest '{File}'", file);
                 }
             }
             _loaded = true;
+            _logger.LogInformation("Loaded {Count} certificate(s) from {Directory}", _cache.Count, _directory);
         }
         finally
         {
@@ -219,5 +232,6 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
         try { oldCts.Cancel(); } catch (ObjectDisposedException) { }
         oldCts.Dispose();
+        _logger.LogDebug("JsonCertificateRepository reload signal fired");
     }
 }

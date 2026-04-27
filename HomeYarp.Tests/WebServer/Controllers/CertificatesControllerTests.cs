@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HomeYarp.Tests.WebServer.Controllers;
 
@@ -20,7 +21,7 @@ public class CertificatesControllerTests
 
     private CertificatesController NewController()
     {
-        var controller = new CertificatesController(_service, _acme, _selfSigned);
+        var controller = new CertificatesController(_service, _acme, _selfSigned, NullLogger<CertificatesController>.Instance);
 
         var services = new ServiceCollection();
         services.AddSingleton<ProblemDetailsFactory, FakeProblemDetailsFactory>();

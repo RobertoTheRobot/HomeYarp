@@ -118,6 +118,7 @@ public sealed class AcmeService : IAcmeService
         var options = _options.CurrentValue;
         EnsureConfigured(options);
 
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var gate = CertGates.GetOrAdd(certificateId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
@@ -132,6 +133,12 @@ public sealed class AcmeService : IAcmeService
 
             var (ctx, accountKey, registrationLocation) = await EnsureAccountAsync(options, cancellationToken);
 
+            _logger.LogDebug(
+                "ACME {Action}: placing order for cert '{Name}' ({Id}) — {HostCount} authorization(s) expected",
+                renewing ? "renew" : "issue",
+                name,
+                certificateId,
+                hostnames.Count);
             var order = await ctx.NewOrder(hostnames);
 
             await ValidateChallengesAsync(order, cancellationToken);
@@ -179,14 +186,29 @@ public sealed class AcmeService : IAcmeService
                 new CertificateMaterial(certificatePem, privateKeyPem),
                 cancellationToken);
 
+            stopwatch.Stop();
             _logger.LogInformation(
-                "ACME {Action} succeeded for cert '{Name}' ({Id}); valid until {NotAfter:o}",
+                "ACME {Action} succeeded for cert '{Name}' ({Id}); thumbprint={Thumbprint} valid until {NotAfter:o} (took {ElapsedMs} ms)",
                 renewing ? "renew" : "issue",
                 name,
                 certificateId,
-                certificate.NotAfter);
+                certificate.Thumbprint,
+                certificate.NotAfter,
+                stopwatch.ElapsedMilliseconds);
 
             return certificate;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogError(
+                ex,
+                "ACME {Action} failed for cert '{Name}' ({Id}) after {ElapsedMs} ms",
+                renewing ? "renew" : "issue",
+                name,
+                certificateId,
+                stopwatch.ElapsedMilliseconds);
+            throw;
         }
         finally
         {
@@ -201,10 +223,19 @@ public sealed class AcmeService : IAcmeService
         var record = await _accountStore.LoadAsync(options.DirectoryUrl, cancellationToken);
         if (record is not null)
         {
+            _logger.LogDebug(
+                "ACME account loaded from store for directory {Directory} (email {Email})",
+                options.DirectoryUrl,
+                record.Email);
             var existingKey = KeyFactory.FromPem(record.KeyPem);
             var ctx = new AcmeContext(new Uri(options.DirectoryUrl), existingKey);
             return (ctx, existingKey, record.RegistrationLocation);
         }
+
+        _logger.LogInformation(
+            "ACME account not found for directory {Directory}; registering new account for {Email}",
+            options.DirectoryUrl,
+            options.AccountEmail);
 
         var accountKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
         var newCtx = new AcmeContext(new Uri(options.DirectoryUrl), accountKey);
@@ -238,10 +269,12 @@ public sealed class AcmeService : IAcmeService
                 _challengeStore.Publish(http.Token, http.KeyAuthz);
                 publishedTokens.Add(http.Token);
                 challenges.Add((http, http.Token));
+                _logger.LogDebug("ACME HTTP-01 challenge published (token '{Token}')", http.Token);
             }
 
-            foreach (var (challenge, _) in challenges)
+            foreach (var (challenge, token) in challenges)
             {
+                _logger.LogDebug("ACME asking server to validate challenge token '{Token}'", token);
                 await challenge.Validate();
             }
 
@@ -266,8 +299,11 @@ public sealed class AcmeService : IAcmeService
                 if (resource.Status != ChallengeStatus.Valid)
                 {
                     var detail = resource.Error?.Detail ?? "unknown";
+                    _logger.LogError("ACME HTTP-01 challenge token '{Token}' failed: {Detail}", token, detail);
                     throw new InvalidOperationException($"ACME HTTP-01 challenge failed: {detail}");
                 }
+
+                _logger.LogDebug("ACME HTTP-01 challenge token '{Token}' validated", token);
             }
 
             // Wait for the order itself to become ready/valid before generating.

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Serilog;
 
 namespace HomeYarp.WebServer;
 
@@ -12,11 +13,25 @@ public static class HomeYarpKestrelConfiguration
     {
         var listeners = builder.Configuration.GetSection(ListenerOptions.SectionName).Get<ListenerOptions>() ?? new ListenerOptions();
 
+        Log.Information(
+            "Kestrel listener config: Http={Http} HttpsOffload={HttpsOffload} HttpsPassthrough={HttpsPassthrough}",
+            listeners.Http,
+            listeners.HttpsOffload,
+            listeners.HttpsPassthrough);
+
+        if (listeners.Http is null or 0
+            && listeners.HttpsOffload is null or 0
+            && listeners.HttpsPassthrough is null or 0)
+        {
+            Log.Warning("All HomeYarp listeners are disabled — no inbound traffic will be accepted");
+        }
+
         builder.WebHost.ConfigureKestrel(options =>
         {
             if (listeners.Http is int httpPort and > 0)
             {
                 options.ListenAnyIP(httpPort);
+                Log.Information("Listening for HTTP on port {Port}", httpPort);
             }
 
             if (listeners.HttpsOffload is int httpsPort and > 0)
@@ -32,6 +47,7 @@ public static class HomeYarpKestrelConfiguration
                         };
                     });
                 });
+                Log.Information("Listening for HTTPS-offload on port {Port} (SNI selection from cert store)", httpsPort);
             }
 
             if (listeners.HttpsPassthrough is int passthroughPort and > 0)
@@ -40,6 +56,7 @@ public static class HomeYarpKestrelConfiguration
                 {
                     listenOptions.UseConnectionHandler<TlsPassthroughConnectionHandler>();
                 });
+                Log.Information("Listening for HTTPS-passthrough (raw L4 + SNI peek) on port {Port}", passthroughPort);
             }
         });
 

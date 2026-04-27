@@ -1,5 +1,7 @@
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Primitives;
 using Yarp.ReverseProxy.Configuration;
 using Yarp.ReverseProxy.Forwarder;
@@ -9,13 +11,15 @@ namespace HomeYarp.Application.Proxy;
 public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
 {
     private readonly IApplicationRepository _repository;
+    private readonly ILogger<HomeYarpConfigProvider> _logger;
     private readonly object _lock = new();
     private volatile HomeYarpConfig _config;
     private IDisposable? _changeSubscription;
 
-    public HomeYarpConfigProvider(IApplicationRepository repository)
+    public HomeYarpConfigProvider(IApplicationRepository repository, ILogger<HomeYarpConfigProvider>? logger = null)
     {
         _repository = repository;
+        _logger = logger ?? NullLogger<HomeYarpConfigProvider>.Instance;
         _config = BuildConfig();
         _changeSubscription = ChangeToken.OnChange(_repository.GetReloadToken, ReloadConfig);
     }
@@ -24,6 +28,7 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
 
     private void ReloadConfig()
     {
+        _logger.LogInformation("YARP config reload signaled by application repository");
         var newConfig = BuildConfig();
         HomeYarpConfig oldConfig;
         lock (_lock)
@@ -32,6 +37,7 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
             _config = newConfig;
         }
         oldConfig.SignalChange();
+        _logger.LogDebug("YARP config swap complete; old snapshot signalled change");
     }
 
     private HomeYarpConfig BuildConfig()
@@ -40,16 +46,28 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
 
         var routes = new List<RouteConfig>();
         var clusters = new List<ClusterConfig>();
+        var skippedDisabled = 0;
+        var skippedNoDestinations = 0;
 
         foreach (var app in applications)
         {
+            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["AppId"] = app.Id,
+                ["AppName"] = app.Name
+            });
+
             if (!app.Enabled)
             {
+                skippedDisabled++;
+                _logger.LogDebug("Skipping app '{AppName}' ({AppId}) — disabled", app.Name, app.Id);
                 continue;
             }
 
             if (app.Cluster.Destinations.Count == 0)
             {
+                skippedNoDestinations++;
+                _logger.LogWarning("Skipping app '{AppName}' ({AppId}) — no destinations configured", app.Name, app.Id);
                 continue;
             }
 
@@ -95,8 +113,33 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
                         .Select(t => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(t))
                         .ToList()
                 });
+
+                _logger.LogDebug(
+                    "Mapped route '{RouteId}' for app '{AppName}' ({AppId}) — hosts=[{Hosts}] path='{Path}' order={Order}",
+                    routeId,
+                    app.Name,
+                    app.Id,
+                    string.Join(",", r.Hosts ?? new List<string>()),
+                    r.Path,
+                    r.Order);
             }
+
+            _logger.LogInformation(
+                "Built YARP cluster '{ClusterId}' for app '{AppName}' ({AppId}) with {DestinationCount} destination(s) and {RouteCount} route(s)",
+                clusterId,
+                app.Name,
+                app.Id,
+                destinations.Count,
+                app.Routes.Count);
         }
+
+        _logger.LogInformation(
+            "YARP config built: {RouteCount} route(s), {ClusterCount} cluster(s), {AppCount} application(s) ({Disabled} disabled, {NoDest} skipped without destinations)",
+            routes.Count,
+            clusters.Count,
+            applications.Count,
+            skippedDisabled,
+            skippedNoDestinations);
 
         return new HomeYarpConfig(routes, clusters);
     }
