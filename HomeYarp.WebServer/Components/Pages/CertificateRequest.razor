@@ -24,7 +24,7 @@
         <legend>Identity</legend>
         <label>
             Name (slug)
-            <input class="input" @bind="_name" required placeholder="e.g. cloud-perezfaulks" />
+            <input class="input" @bind="_name" required placeholder="e.g. cloud-example" />
         </label>
         <label>
             Friendly name
@@ -36,7 +36,7 @@
         <legend>Hostnames</legend>
         <label>
             One per line. The first hostname becomes the certificate's Common Name.
-            <textarea class="input" rows="6" @bind="_hostnames" placeholder="cloud.perezfaulks.com&#10;www.cloud.perezfaulks.com" required></textarea>
+            <textarea class="input" rows="6" @bind="_hostnames" placeholder="cloud.example.com&#10;www.cloud.example.com" required></textarea>
         </label>
         <p class="muted">
             Wildcards (<code>*.example.com</code>) are not supported &mdash; HTTP-01 cannot validate them.

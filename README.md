@@ -295,9 +295,9 @@ Edit `appsettings.json`:
 curl -X POST http://localhost:5268/api/certificates/acme \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "cloud-perezfaulks",
+    "name": "cloud-example",
     "friendlyName": "Cloud (Let's Encrypt)",
-    "hostnames": ["cloud.perezfaulks.com"]
+    "hostnames": ["cloud.example.com"]
   }'
 ```
 

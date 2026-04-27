@@ -113,9 +113,9 @@ POST /api/certificates/self-signed
 // ACME (Let's Encrypt)
 POST /api/certificates/acme
 {
-  "name": "cloud-perezfaulks",
+  "name": "cloud-example",
   "friendlyName": "Cloud (Let's Encrypt)",
-  "hostnames": ["cloud.perezfaulks.com"]
+  "hostnames": ["cloud.example.com"]
 }
 ```
 

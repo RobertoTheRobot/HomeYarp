@@ -41,9 +41,9 @@ POST {{HomeYarp.WebServer_HostAddress}}/api/certificates/acme
 Content-Type: application/json
 
 {
-  "name": "cloud-perezfaulks",
+  "name": "cloud-example",
   "friendlyName": "Cloud (Let's Encrypt)",
-  "hostnames": ["cloud.perezfaulks.com"]
+  "hostnames": ["cloud.example.com"]
 }
 
 ### Manually trigger renewal of an ACME-managed certificate
