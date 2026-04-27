@@ -363,7 +363,7 @@ Plus one structured line per HTTP request via `UseSerilogRequestLogging` (Blazor
 
 ### Configuring sinks
 
-The default `appsettings.json` writes only to **Console**. Sinks are activated purely by appearing in `Serilog:WriteTo`. The packages for File and Seq are referenced; nothing fires unless you opt in.
+`appsettings.json` ships with **Console** and **Seq** declared in `Serilog:WriteTo`. The Seq entry is shape-only — its `serverUrl` and `apiKey` are externalized to user secrets (dev) and environment variables / compose (production), so nothing sensitive is committed. The File sink package is referenced but unused until you add it to `WriteTo`.
 
 #### File (rolling)
 
@@ -395,22 +395,83 @@ The `-` in the path name is where Serilog injects the date suffix (`logs/homeyar
 docker run --name seq -d -e ACCEPT_EULA=Y -p 5341:80 datalust/seq:latest
 ```
 
+The shape lives in `appsettings.json`:
+
 ```json
 "Serilog": {
   "Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.Seq" ],
   "WriteTo": [
-    { "Name": "Console" },
-    {
-      "Name": "Seq",
-      "Args": {
-        "serverUrl": "http://localhost:5341"
-      }
-    }
+    { "Name": "Console", "Args": { "outputTemplate": "..." } },
+    { "Name": "Seq", "Args": {} }
   ]
 }
 ```
 
-Open `http://localhost:5341` and filter on `AppId = '05315e43-...'` or `AppName = 'echo'` to drill into routing events for one app.
+The values (`serverUrl`, `apiKey`) are supplied per environment — never committed.
+
+##### Development — `dotnet user-secrets`
+
+The `UserSecretsId` is already set on `HomeYarp.WebServer.csproj`. Set the values once on each developer machine:
+
+```bash
+dotnet user-secrets set "Serilog:WriteTo:1:Args:serverUrl" "http://192.168.1.2:5341" \
+  --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
+dotnet user-secrets set "Serilog:WriteTo:1:Args:apiKey" "<your-seq-api-key>" \
+  --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
+```
+
+Verify with `dotnet user-secrets list --project HomeYarp.WebServer/HomeYarp.WebServer.csproj`. Secrets are stored at `%APPDATA%\Microsoft\UserSecrets\<id>\secrets.json` (Windows) or `~/.microsoft/usersecrets/<id>/secrets.json` (Linux/macOS) and are loaded automatically when `ASPNETCORE_ENVIRONMENT=Development`.
+
+##### Production — environment variables
+
+ASP.NET Core's environment-variable provider maps `__` (double underscore) to the config-key separator `:`. The index `1` matches `WriteTo[1]` (Console is `[0]`, Seq is `[1]`). If you reorder `WriteTo` in `appsettings.json`, bump the index everywhere.
+
+```bash
+# bash / Linux
+export Serilog__WriteTo__1__Args__serverUrl="http://seq.internal:5341"
+export Serilog__WriteTo__1__Args__apiKey="<your-seq-api-key>"
+
+# PowerShell
+$env:Serilog__WriteTo__1__Args__serverUrl = "http://seq.internal:5341"
+$env:Serilog__WriteTo__1__Args__apiKey    = "<your-seq-api-key>"
+```
+
+##### Production — Docker Compose
+
+Keep the API key out of `compose.yaml` by referencing a `.env` file (gitignored) next to it:
+
+```yaml
+# compose.yaml
+services:
+  homeyarp:
+    image: homeyarp:latest
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Serilog__WriteTo__1__Args__serverUrl: http://seq:5341
+      Serilog__WriteTo__1__Args__apiKey: ${SEQ_API_KEY}   # interpolated from .env
+    depends_on: [ seq ]
+    # ...
+  seq:
+    image: datalust/seq:latest
+    environment:
+      ACCEPT_EULA: "Y"
+    volumes:
+      - seq-data:/data
+    ports:
+      - "5341:80"
+
+volumes:
+  seq-data:
+```
+
+```bash
+# .env (gitignored)
+SEQ_API_KEY=...
+```
+
+##### Querying
+
+Open Seq and filter on `AppId = '05315e43-...'` or `AppName = 'echo'` to drill into routing events for one app. If the Seq sink fails to construct (missing `serverUrl`), startup fails fast — that's intentional, so misconfiguration surfaces immediately instead of silently dropping logs.
 
 ### Log levels
 
