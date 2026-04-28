@@ -27,6 +27,7 @@ public static class DependencyInjection
         services.AddSingleton<SniCertificateSelector>();
         services.AddSingleton<TlsPassthroughConnectionHandler>();
         services.AddSingleton<IAcmeChallengeStore, InMemoryAcmeChallengeStore>();
+        services.AddSingleton<IRuntimeReloadService, RuntimeReloadService>();
 
         services.AddHostedService<AcmeRenewalService>();
         services.AddHostedService<SelfSignedRenewalService>();

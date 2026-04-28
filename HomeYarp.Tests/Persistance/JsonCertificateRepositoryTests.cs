@@ -70,7 +70,7 @@ public class JsonCertificateRepositoryTests
     }
 
     [Fact]
-    public async Task GetReloadToken_FiresOnSave()
+    public async Task GetReloadToken_DoesNotFireOnSave_BecauseReloadIsNowManual()
     {
         using var dir = new TempDirectory();
         var repo = NewRepo(dir.Path);
@@ -80,11 +80,12 @@ public class JsonCertificateRepositoryTests
         var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
         await repo.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
 
-        token.HasChanged.ShouldBeTrue();
+        // Save no longer auto-fires reload — IRuntimeReloadService does it on demand.
+        token.HasChanged.ShouldBeFalse();
     }
 
     [Fact]
-    public async Task GetReloadToken_FiresOnDelete()
+    public async Task GetReloadToken_DoesNotFireOnDelete_BecauseReloadIsNowManual()
     {
         using var dir = new TempDirectory();
         var repo = NewRepo(dir.Path);
@@ -94,6 +95,22 @@ public class JsonCertificateRepositoryTests
         var token = repo.GetReloadToken();
 
         await repo.DeleteAsync(cert.Id);
+
+        token.HasChanged.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task SignalReload_FiresChangeToken()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var cert = ApplicationFactory.CreateSelfSignedCert("x", new[] { "x.local" });
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
+        await repo.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
+
+        var token = repo.GetReloadToken();
+        token.HasChanged.ShouldBeFalse();
+        repo.SignalReload();
 
         token.HasChanged.ShouldBeTrue();
     }

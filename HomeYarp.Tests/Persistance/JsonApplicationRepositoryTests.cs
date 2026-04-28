@@ -80,7 +80,7 @@ public class JsonApplicationRepositoryTests
     }
 
     [Fact]
-    public async Task GetReloadToken_FiresOnAdd()
+    public async Task GetReloadToken_DoesNotFireOnAdd_BecauseReloadIsNowManual()
     {
         using var dir = new TempDirectory();
         var repo = NewRepo(dir.Path);
@@ -89,11 +89,12 @@ public class JsonApplicationRepositoryTests
 
         await repo.AddAsync(ApplicationFactory.Create(name: "x"));
 
-        initial.HasChanged.ShouldBeTrue();
+        // Add no longer auto-fires reload — IRuntimeReloadService does it on demand.
+        initial.HasChanged.ShouldBeFalse();
     }
 
     [Fact]
-    public async Task GetReloadToken_FiresOnUpdate()
+    public async Task GetReloadToken_DoesNotFireOnUpdate_BecauseReloadIsNowManual()
     {
         using var dir = new TempDirectory();
         var repo = NewRepo(dir.Path);
@@ -104,11 +105,11 @@ public class JsonApplicationRepositoryTests
         token.HasChanged.ShouldBeFalse();
         await repo.UpdateAsync(app);
 
-        token.HasChanged.ShouldBeTrue();
+        token.HasChanged.ShouldBeFalse();
     }
 
     [Fact]
-    public async Task GetReloadToken_FiresOnSuccessfulDelete()
+    public async Task GetReloadToken_DoesNotFireOnDelete_BecauseReloadIsNowManual()
     {
         using var dir = new TempDirectory();
         var repo = NewRepo(dir.Path);
@@ -117,6 +118,20 @@ public class JsonApplicationRepositoryTests
 
         var token = repo.GetReloadToken();
         await repo.DeleteAsync(app.Id);
+
+        token.HasChanged.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task SignalReload_FiresChangeToken()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        await repo.AddAsync(ApplicationFactory.Create(name: "x"));
+
+        var token = repo.GetReloadToken();
+        token.HasChanged.ShouldBeFalse();
+        repo.SignalReload();
 
         token.HasChanged.ShouldBeTrue();
     }

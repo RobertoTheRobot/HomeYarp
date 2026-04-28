@@ -107,8 +107,7 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         {
             _gate.Release();
         }
-        _logger.LogDebug("Certificate '{CertName}' ({CertId}) persisted to disk", certificate.Name, certificate.Id);
-        SignalReload();
+        _logger.LogDebug("Certificate '{CertName}' ({CertId}) persisted to disk (reload deferred)", certificate.Name, certificate.Id);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -141,8 +140,7 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         }
         if (removed)
         {
-            _logger.LogDebug("Certificate '{CertName}' ({CertId}) removed from disk", removedName, id);
-            SignalReload();
+            _logger.LogDebug("Certificate '{CertName}' ({CertId}) removed from disk (reload deferred)", removedName, id);
         }
         return removed;
     }
@@ -227,13 +225,13 @@ public sealed class JsonCertificateRepository : ICertificateRepository
 
     private string GetKeyPath(Guid id) => Path.Combine(_directory, id.ToString("N") + ".key.pem");
 
-    private void SignalReload()
+    public void SignalReload()
     {
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
         try { oldCts.Cancel(); }
         catch (ObjectDisposedException) { }
         catch (Exception ex) { _logger.LogError(ex, "Certificate reload callbacks threw"); }
         oldCts.Dispose();
-        _logger.LogDebug("JsonCertificateRepository reload signal fired");
+        _logger.LogInformation("JsonCertificateRepository reload signal fired");
     }
 }

@@ -51,6 +51,15 @@ body {
 .nav a:hover { background: rgba(56, 189, 248, 0.1); }
 .nav a.active { background: rgba(56, 189, 248, 0.18); color: var(--accent); }
 
+.nav-reload {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+.nav-reload .btn { width: 100%; }
+.reload-runtime { display: flex; flex-direction: column; gap: 0.5rem; }
+.reload-runtime-meta { font-size: 0.8rem; }
+
 main { padding: 2rem 2.5rem; }
 article { max-width: 1100px; }
 

@@ -18,6 +18,12 @@ public interface ICertificateRepository
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     IChangeToken GetReloadToken();
+
+    /// <summary>
+    /// Fires the reload change token explicitly. Save/Delete no longer trigger reload
+    /// automatically — see <see cref="IApplicationRepository.SignalReload"/>.
+    /// </summary>
+    void SignalReload();
 }
 
 public sealed record CertificateMaterial(string CertificatePem, string PrivateKeyPem);

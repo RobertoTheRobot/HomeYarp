@@ -18,4 +18,11 @@ public interface IApplicationRepository
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     IChangeToken GetReloadToken();
+
+    /// <summary>
+    /// Fires the reload change token explicitly. Add/Update/Delete no longer trigger
+    /// reload automatically — callers (the manual UI button, the renewal workers) decide
+    /// when subscribers (HomeYarpConfigProvider, SniCertificateSelector) should rebuild.
+    /// </summary>
+    void SignalReload();
 }

@@ -90,8 +90,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         {
             _gate.Release();
         }
-        _logger.LogDebug("Application '{AppName}' ({AppId}) persisted to disk", application.Name, application.Id);
-        SignalReload();
+        _logger.LogDebug("Application '{AppName}' ({AppId}) persisted to disk (reload deferred)", application.Name, application.Id);
     }
 
     public async Task UpdateAsync(Domain.Application application, CancellationToken cancellationToken = default)
@@ -107,8 +106,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         {
             _gate.Release();
         }
-        _logger.LogDebug("Application '{AppName}' ({AppId}) updated on disk", application.Name, application.Id);
-        SignalReload();
+        _logger.LogDebug("Application '{AppName}' ({AppId}) updated on disk (reload deferred)", application.Name, application.Id);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -139,8 +137,7 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         }
         if (removed)
         {
-            _logger.LogDebug("Application '{AppName}' ({AppId}) removed from disk", removedName, id);
-            SignalReload();
+            _logger.LogDebug("Application '{AppName}' ({AppId}) removed from disk (reload deferred)", removedName, id);
         }
         return removed;
     }
@@ -209,17 +206,17 @@ public sealed class JsonApplicationRepository : IApplicationRepository
 
     private string GetFilePath(Guid id) => Path.Combine(_directory, id.ToString("N") + ".json");
 
-    private void SignalReload()
+    public void SignalReload()
     {
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
         // Cancel runs registered ChangeToken callbacks synchronously on this thread.
         // Each consumer (HomeYarpConfigProvider, SniCertificateSelector) catches its
-        // own exceptions, so a bad cert can't propagate back through the save HTTP
-        // request and leave the in-memory snapshot half-swapped.
+        // own exceptions, so a bad cert can't propagate back through the request that
+        // triggered the reload and leave the in-memory snapshot half-swapped.
         try { oldCts.Cancel(); }
         catch (ObjectDisposedException) { }
         catch (Exception ex) { _logger.LogError(ex, "Application reload callbacks threw"); }
         oldCts.Dispose();
-        _logger.LogDebug("JsonApplicationRepository reload signal fired");
+        _logger.LogInformation("JsonApplicationRepository reload signal fired");
     }
 }

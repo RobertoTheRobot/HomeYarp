@@ -1,4 +1,5 @@
 using HomeYarp.Application.Abstractions;
+using HomeYarp.Application.Services;
 using HomeYarp.Domain;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -91,6 +92,7 @@ public sealed class AcmeRenewalService : BackgroundService
         await using var scope = _scopeFactory.CreateAsyncScope();
         var repo = scope.ServiceProvider.GetRequiredService<ICertificateRepository>();
         var acme = scope.ServiceProvider.GetRequiredService<IAcmeService>();
+        var reload = scope.ServiceProvider.GetRequiredService<IRuntimeReloadService>();
 
         var now = _timeProvider.GetUtcNow();
         var threshold = options.RenewBefore;
@@ -106,6 +108,7 @@ public sealed class AcmeRenewalService : BackgroundService
 
         _logger.LogInformation("ACME renewal tick: {Count} certificate(s) due for renewal.", due.Count);
 
+        var renewedAny = false;
         foreach (var cert in due)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -119,6 +122,7 @@ public sealed class AcmeRenewalService : BackgroundService
                     cert.NotAfter);
                 var renewed = await acme.RenewAsync(cert.Id, cancellationToken);
                 sw.Stop();
+                renewedAny = true;
                 _logger.LogInformation(
                     "ACME renewal: '{Name}' ({Id}) renewed in {ElapsedMs} ms; new expiry {NotAfter:o}",
                     renewed.Name,
@@ -131,6 +135,13 @@ public sealed class AcmeRenewalService : BackgroundService
                 sw.Stop();
                 _logger.LogError(ex, "ACME renewal failed for '{Name}' ({Id}) after {ElapsedMs} ms; will retry on next tick.", cert.Name, cert.Id, sw.ElapsedMilliseconds);
             }
+        }
+
+        if (renewedAny)
+        {
+            // Repos no longer auto-fire reload on save — without this the SNI selector
+            // would keep serving the old (about-to-expire) cert until the next manual reload.
+            await reload.ReloadAsync(progress: null, cancellationToken);
         }
     }
 }

@@ -30,6 +30,11 @@
         <dt>Destinations</dt>
         <dd>@_destinationCount across enabled apps</dd>
     </dl>
+    <p class="muted">
+        Saving an application or certificate writes to disk but does not re-apply to the live proxy.
+        Click below to rebuild the YARP route table and SNI certificate map from the current on-disk state.
+    </p>
+    <ReloadRuntimeButton />
 </section>
 
 <section>

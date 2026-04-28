@@ -1,0 +1,95 @@
+@* Triggers IRuntimeReloadService and renders a live progress log + last-reload timestamp.
+   Saves no longer auto-reload — the user clicks this when they're ready to apply changes. *@
+
+@inject IRuntimeReloadService ReloadService
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div class="reload-runtime @(_busy ? "busy" : null)">
+    <button type="button"
+            class="btn @(Compact ? null : "primary")"
+            disabled="@_busy"
+            @onclick="ReloadAsync"
+            title="Re-apply on-disk applications and certificates to the live proxy">
+        @if (_busy)
+        {
+            <span class="spinner" aria-hidden="true"></span>
+        }
+        @(_busy ? "Reloading…" : "Reload runtime")
+    </button>
+
+    @if (!Compact)
+    {
+        <div class="reload-runtime-meta muted">
+            @if (ReloadService.LastReloadedAt is { } when)
+            {
+                <span>Last reload: @when.ToLocalTime().ToString("HH:mm:ss")</span>
+            }
+            else
+            {
+                <span>Not reloaded yet (running on startup snapshot)</span>
+            }
+        </div>
+    }
+
+    @if (_steps.Count > 0)
+    {
+        <ProgressLog Steps="_steps" />
+    }
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="error">@_error</div>
+    }
+</div>
+
+@code {
+    /// <summary>When true, render only the button (no metadata row). Use in tight spots like the sidebar.</summary>
+    [Parameter] public bool Compact { get; set; }
+
+    /// <summary>Optional callback fired after a successful reload (e.g. to refresh a page-local list).</summary>
+    [Parameter] public EventCallback OnReloaded { get; set; }
+
+    private bool _busy;
+    private string? _error;
+    private readonly List<ProgressStep> _steps = new();
+    private IProgress<string>? _progress;
+
+    protected override void OnInitialized()
+    {
+        _progress = new Progress<string>(message =>
+        {
+            _steps.Add(new ProgressStep(DateTimeOffset.Now, message));
+            InvokeAsync(StateHasChanged);
+        });
+    }
+
+    private async Task ReloadAsync()
+    {
+        _busy = true;
+        _error = null;
+        _steps.Clear();
+        try
+        {
+            await ReloadService.ReloadAsync(_progress);
+            if (OnReloaded.HasDelegate)
+            {
+                await OnReloaded.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        // Nothing to dispose — IProgress<T> doesn't hold unmanaged resources.
+        // Implementing IDisposable so Blazor unwires the component cleanly.
+    }
+}
