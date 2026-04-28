@@ -1,0 +1,60 @@
+services:
+  homeyarp:
+    image: registry.perezfaulks.com/homeyarp-webserver:${HOMEYARP_TAG:-latest}
+    container_name: homeyarp
+    restart: unless-stopped
+
+    # The .NET SDK container publish runs as the non-root `app` user (UID 1654),
+    # but the bind mount below is created root-owned by the Docker daemon, so the
+    # JSON repos can't mkdir /app/data/{applications,certificates}. Running as
+    # root sidesteps it — fine for a single-process homelab proxy.
+    user: "0:0"
+
+    # Listener ports must match HomeYarp:Listeners in appsettings.json
+    # (Http=5268, HttpsOffload=5443, HttpsPassthrough=5444).
+    # Host ports below follow the typical homelab mapping:
+    #   80   → HTTP (also serves the ACME HTTP-01 challenge)
+    #   443  → HTTPS offload (Kestrel terminates TLS using the SNI selector)
+    #   8443 → HTTPS passthrough (raw TCP tunnel; backend terminates TLS)
+    ports:
+      - "80:5268"
+      - "443:5443"
+      - "8443:5444"
+
+    volumes:
+      # Persists application JSON, certificate PEMs, and the ACME account key.
+      # Container working dir is /app, so HomeYarp:Storage:DataRoot=data → /app/data.
+      # Bind-mounted to ./data next to compose.yaml so files are visible on the host.
+      # Owned by root because the container runs as root (see `user`).
+      - ./data:/app/data
+
+    environment:
+      # ASP.NET Core
+      DOTNET_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: Production
+
+      # --- Management surface host filter ---
+      # The UI + REST API + OpenAPI endpoints share listeners with the YARP proxy.
+      # Without a filter, HomeYarp's pages outrank YARP's catch-all and take over
+      # every proxied hostname. Required — set HOMEYARP_MGMT_HOST in .env to the
+      # hostname / IP you reach the admin UI on. Add more entries with __1, __2…
+      HomeYarp__Management__Hosts__0: ${HOMEYARP_MGMT_HOST:?set HOMEYARP_MGMT_HOST in .env}
+      # HomeYarp__Management__Hosts__1: homeyarp.local
+
+      # --- Serilog → Seq (optional) ---
+      # The image bakes in a Seq sink with empty Args. Set SEQ_URL in .env to ship
+      # logs there; leave unset and the sink will silently no-op (logs still go
+      # to stdout via the Console sink).
+      Serilog__WriteTo__1__Args__serverUrl: ${SEQ_URL:-}
+      # Serilog__WriteTo__1__Args__apiKey: ${SEQ_API_KEY:-}
+
+      # --- Let's Encrypt (optional) ---
+      # Defaults are off. To enable, set in .env:
+      #   ACME_ENABLED=true
+      #   ACME_EMAIL=you@example.com
+      #   ACME_AGREE_TOS=true
+      # Requires inbound :80 to reach this container (already mapped above).
+      HomeYarp__Acme__Enabled: ${ACME_ENABLED:-false}
+      HomeYarp__Acme__AccountEmail: ${ACME_EMAIL:-}
+      HomeYarp__Acme__AgreeToTermsOfService: ${ACME_AGREE_TOS:-false}
+      # HomeYarp__Acme__DirectoryUrl: https://acme-staging-v02.api.letsencrypt.org/directory

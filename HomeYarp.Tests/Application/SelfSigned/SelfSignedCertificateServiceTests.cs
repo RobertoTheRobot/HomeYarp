@@ -78,6 +78,22 @@ public class SelfSignedCertificateServiceTests
     }
 
     [Fact]
+    public async Task IssueAsync_WhenProgressProvided_ReportsExpectedSteps()
+    {
+        _repo.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((Certificate?)null);
+        var reported = new List<string>();
+        var progress = new SynchronousProgress<string>(reported.Add);
+
+        await Service.IssueAsync("p", null, new[] { "p.local" }, CertificateKeyType.Ec256, 365, progress: progress);
+
+        reported.ShouldNotBeEmpty();
+        reported.ShouldContain(s => s.Contains("Checking certificate name uniqueness", StringComparison.OrdinalIgnoreCase));
+        reported.ShouldContain(s => s.Contains("Generating", StringComparison.OrdinalIgnoreCase) && s.Contains("key", StringComparison.OrdinalIgnoreCase));
+        reported.ShouldContain(s => s.Contains("Persisting certificate", StringComparison.OrdinalIgnoreCase));
+        reported.ShouldContain(s => s.Contains("Reloading SNI selector", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task IssueAsync_WithRsa2048_GeneratesCertWithRsaKeyType()
     {
         _repo.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((Certificate?)null);

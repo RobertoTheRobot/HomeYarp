@@ -238,6 +238,44 @@ label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
 
 .view-pane.hidden { display: none; }
 
+/* Live progress log shown during long-running operations (save app, issue cert). */
+.progress-log {
+    background: var(--code);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    max-height: 280px;
+    overflow-y: auto;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+.progress-log-row { display: flex; gap: 0.75rem; }
+.progress-log-row + .progress-log-row { margin-top: 0.15rem; }
+.progress-log-time { color: var(--muted); flex: none; }
+.progress-log-msg { color: var(--text); }
+.progress-log-row:last-child .progress-log-msg::after {
+    content: " ▍";
+    color: var(--accent);
+    animation: progress-cursor 1s steps(2) infinite;
+}
+@keyframes progress-cursor { 50% { opacity: 0; } }
+
+/* Inline button spinner used while a save/issue is running. */
+.spinner {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-right: 0.4em;
+    vertical-align: -0.15em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinner-rotate 0.7s linear infinite;
+}
+@keyframes spinner-rotate { to { transform: rotate(360deg); } }
+
 @media (max-width: 720px) {
     .page { grid-template-columns: 1fr; }
     .nav { border-right: none; border-bottom: 1px solid var(--border); }

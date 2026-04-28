@@ -230,7 +230,9 @@ public sealed class JsonCertificateRepository : ICertificateRepository
     private void SignalReload()
     {
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
-        try { oldCts.Cancel(); } catch (ObjectDisposedException) { }
+        try { oldCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { _logger.LogError(ex, "Certificate reload callbacks threw"); }
         oldCts.Dispose();
         _logger.LogDebug("JsonCertificateRepository reload signal fired");
     }

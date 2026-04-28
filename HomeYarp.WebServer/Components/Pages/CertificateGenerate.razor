@@ -62,8 +62,17 @@
         <div class="error">@_error</div>
     }
 
+    @if (_steps.Count > 0)
+    {
+        <ProgressLog Steps="_steps" />
+    }
+
     <div class="form-actions">
         <button type="submit" class="btn primary" disabled="@_busy">
+            @if (_busy)
+            {
+                <span class="spinner" aria-hidden="true"></span>
+            }
             @(_busy ? "Generating…" : "Generate certificate")
         </button>
     </div>
@@ -77,10 +86,22 @@
     private int _validityDays = 365;
     private bool _busy;
     private string? _error;
+    private readonly List<ProgressStep> _steps = new();
+    private IProgress<string>? _progress;
+
+    protected override void OnInitialized()
+    {
+        _progress = new Progress<string>(message =>
+        {
+            _steps.Add(new ProgressStep(DateTimeOffset.Now, message));
+            StateHasChanged();
+        });
+    }
 
     private async Task GenerateAsync()
     {
         _error = null;
+        _steps.Clear();
         var hosts = (_hostnames ?? string.Empty)
             .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
@@ -99,7 +120,8 @@
                 string.IsNullOrWhiteSpace(_friendlyName) ? null : _friendlyName,
                 hosts,
                 _keyType,
-                _validityDays);
+                _validityDays,
+                progress: _progress);
             Nav.NavigateTo("certificates");
         }
         catch (Exception ex)

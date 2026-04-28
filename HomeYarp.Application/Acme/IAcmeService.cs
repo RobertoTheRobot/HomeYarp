@@ -8,7 +8,8 @@ public interface IAcmeService
         string name,
         string? friendlyName,
         IReadOnlyList<string> hostnames,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null);
 
     Task<Certificate> RenewAsync(Guid certificateId, CancellationToken cancellationToken = default);
 }

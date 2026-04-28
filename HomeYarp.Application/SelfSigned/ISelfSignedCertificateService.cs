@@ -10,7 +10,8 @@ public interface ISelfSignedCertificateService
         IReadOnlyList<string> hostnames,
         CertificateKeyType keyType,
         int validityDays,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null);
 
     Task<Certificate> RegenerateAsync(Guid certificateId, CancellationToken cancellationToken = default);
 

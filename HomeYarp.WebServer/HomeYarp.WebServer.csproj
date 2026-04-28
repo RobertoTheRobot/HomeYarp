@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>0b4c6432-567a-47b1-a0a5-af12a31fc925</UserSecretsId>
+    <ContainerPublishMethod>Docker</ContainerPublishMethod>
   </PropertyGroup>
 
   <ItemGroup>

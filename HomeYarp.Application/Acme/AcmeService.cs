@@ -42,7 +42,8 @@ public sealed class AcmeService : IAcmeService
         string name,
         string? friendlyName,
         IReadOnlyList<string> hostnames,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -64,7 +65,7 @@ public sealed class AcmeService : IAcmeService
             }
         }
 
-        return IssueInternalAsync(name, friendlyName, hostnames, cancellationToken);
+        return IssueInternalAsync(name, friendlyName, hostnames, cancellationToken, progress);
     }
 
     public async Task<Certificate> RenewAsync(Guid certificateId, CancellationToken cancellationToken = default)
@@ -83,15 +84,18 @@ public sealed class AcmeService : IAcmeService
             existing.FriendlyName,
             existing.Acme.Hostnames.ToList(),
             renewing: true,
-            cancellationToken);
+            cancellationToken,
+            progress: null);
     }
 
     private async Task<Certificate> IssueInternalAsync(
         string name,
         string? friendlyName,
         IReadOnlyList<string> hostnames,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<string>? progress = null)
     {
+        progress?.Report($"Checking certificate name uniqueness ('{name}')");
         var existing = await _certificates.GetByNameAsync(name, cancellationToken);
         if (existing is not null)
         {
@@ -104,7 +108,8 @@ public sealed class AcmeService : IAcmeService
             friendlyName,
             hostnames.ToList(),
             renewing: false,
-            cancellationToken);
+            cancellationToken,
+            progress);
     }
 
     private async Task<Certificate> OrchestrateOrderAsync(
@@ -113,7 +118,8 @@ public sealed class AcmeService : IAcmeService
         string? friendlyName,
         List<string> hostnames,
         bool renewing,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<string>? progress = null)
     {
         var options = _options.CurrentValue;
         EnsureConfigured(options);
@@ -131,8 +137,10 @@ public sealed class AcmeService : IAcmeService
                 string.Join(",", hostnames),
                 options.DirectoryUrl);
 
+            progress?.Report($"Loading or registering ACME account at {options.DirectoryUrl}");
             var (ctx, accountKey, registrationLocation) = await EnsureAccountAsync(options, cancellationToken);
 
+            progress?.Report($"Placing order with {hostnames.Count} authorization(s) for [{string.Join(", ", hostnames)}]");
             _logger.LogDebug(
                 "ACME {Action}: placing order for cert '{Name}' ({Id}) — {HostCount} authorization(s) expected",
                 renewing ? "renew" : "issue",
@@ -141,8 +149,9 @@ public sealed class AcmeService : IAcmeService
                 hostnames.Count);
             var order = await ctx.NewOrder(hostnames);
 
-            await ValidateChallengesAsync(order, cancellationToken);
+            await ValidateChallengesAsync(order, cancellationToken, progress);
 
+            progress?.Report("Generating fresh keypair and CSR");
             var certKey = KeyFactory.NewKey(MapKeyAlgorithm(options.KeyType));
 
             var csr = new CsrInfo
@@ -150,6 +159,7 @@ public sealed class AcmeService : IAcmeService
                 CommonName = hostnames[0]
             };
 
+            progress?.Report("Downloading signed certificate chain from CA");
             var chain = await order.Generate(csr, certKey);
             var certificatePem = chain.ToPem();
             var privateKeyPem = certKey.ToPem();
@@ -181,12 +191,14 @@ public sealed class AcmeService : IAcmeService
                 }
             };
 
+            progress?.Report($"Persisting certificate (PEM + key); valid until {certificate.NotAfter:yyyy-MM-dd}");
             await _certificates.SaveAsync(
                 certificate,
                 new CertificateMaterial(certificatePem, privateKeyPem),
                 cancellationToken);
 
             stopwatch.Stop();
+            progress?.Report($"Done in {stopwatch.Elapsed.TotalSeconds:F1}s");
             _logger.LogInformation(
                 "ACME {Action} succeeded for cert '{Name}' ({Id}); thumbprint={Thumbprint} valid until {NotAfter:o} (took {ElapsedMs} ms)",
                 renewing ? "renew" : "issue",
@@ -253,7 +265,7 @@ public sealed class AcmeService : IAcmeService
         return (newCtx, accountKey, location);
     }
 
-    private async Task ValidateChallengesAsync(IOrderContext order, CancellationToken cancellationToken)
+    private async Task ValidateChallengesAsync(IOrderContext order, CancellationToken cancellationToken, IProgress<string>? progress = null)
     {
         var authzs = await order.Authorizations();
 
@@ -261,6 +273,7 @@ public sealed class AcmeService : IAcmeService
         try
         {
             // Publish all challenges first, then validate, so the ACME server can poll any of them.
+            progress?.Report("Publishing HTTP-01 challenge tokens");
             var challenges = new List<(IChallengeContext Challenge, string Token)>();
             foreach (var authz in authzs)
             {
@@ -272,6 +285,7 @@ public sealed class AcmeService : IAcmeService
                 _logger.LogDebug("ACME HTTP-01 challenge published (token '{Token}')", http.Token);
             }
 
+            progress?.Report($"Asking Let's Encrypt to validate {challenges.Count} challenge(s)");
             foreach (var (challenge, token) in challenges)
             {
                 _logger.LogDebug("ACME asking server to validate challenge token '{Token}'", token);
@@ -279,8 +293,10 @@ public sealed class AcmeService : IAcmeService
             }
 
             // Poll each challenge until valid/invalid, with capped backoff.
-            foreach (var (challenge, token) in challenges)
+            for (var i = 0; i < challenges.Count; i++)
             {
+                var (challenge, token) = challenges[i];
+                progress?.Report($"Polling challenge {i + 1}/{challenges.Count} until validated");
                 Challenge resource = await challenge.Resource();
                 var delay = TimeSpan.FromSeconds(2);
                 var ceiling = TimeSpan.FromSeconds(8);
@@ -300,13 +316,16 @@ public sealed class AcmeService : IAcmeService
                 {
                     var detail = resource.Error?.Detail ?? "unknown";
                     _logger.LogError("ACME HTTP-01 challenge token '{Token}' failed: {Detail}", token, detail);
+                    progress?.Report($"Challenge {i + 1} failed: {detail}");
                     throw new InvalidOperationException($"ACME HTTP-01 challenge failed: {detail}");
                 }
 
+                progress?.Report($"Challenge {i + 1}/{challenges.Count} validated");
                 _logger.LogDebug("ACME HTTP-01 challenge token '{Token}' validated", token);
             }
 
             // Wait for the order itself to become ready/valid before generating.
+            progress?.Report("Waiting for order to become ready");
             Order orderResource = await order.Resource();
             var orderDelay = TimeSpan.FromSeconds(1);
             var orderCeiling = TimeSpan.FromSeconds(8);

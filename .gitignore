@@ -3,6 +3,13 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
+# HomeYarp runtime data when bind-mounted from compose.yaml
+# (application JSON, certificate PEMs, ACME account keys — DO NOT commit).
+/data/
+
+# Per-deployment compose overrides (admin host, Seq URL, ACME email…).
+.env
+
 # User-specific files
 *.rsuser
 *.suo
@@ -402,5 +409,3 @@ HomeYarp.WebServer/data/
 
 # Claude Code local settings
 .claude/settings.local.json
-
-/compose.yaml

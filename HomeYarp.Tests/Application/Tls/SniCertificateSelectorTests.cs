@@ -118,4 +118,58 @@ public class SniCertificateSelectorTests
         // And the freshly-loaded cert is selectable.
         selector.Select("ha.home.lan").ShouldNotBeNull();
     }
+
+    [Fact]
+    public void Reload_WhenCertMaterialThrows_DoesNotPropagateAndKeepsPreviousBindings()
+    {
+        // Regression: reload exceptions used to propagate up through
+        // ChangeToken.OnChange → CTS.Cancel() → the request that triggered the
+        // save, leaving the on-disk file written but the in-memory cert map
+        // half-swapped. Restart was the only recovery.
+        var certs = Substitute.For<ICertificateRepository>();
+        var apps = Substitute.For<IApplicationRepository>();
+
+        var certId = Guid.NewGuid();
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("ha.home.lan");
+        var cert = new Certificate
+        {
+            Id = certId,
+            Name = "test",
+            SubjectAlternativeNames = new List<string> { "ha.home.lan" },
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-5),
+            NotAfter = DateTimeOffset.UtcNow.AddYears(1)
+        };
+        var app = ApplicationFactory.Create(
+            tlsMode: TlsMode.Offload,
+            tlsSource: TlsCertificateSource.Manual,
+            routeHosts: new[] { "ha.home.lan" },
+            certificateId: certId);
+        apps.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        certs.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { cert });
+
+        var materialCalls = 0;
+        certs.GetMaterialAsync(certId, Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            materialCalls++;
+            if (materialCalls == 1) return new CertificateMaterial(certPem, keyPem);
+            throw new IOException("simulated disk read failure during reload");
+        });
+
+        var appsCts = new CancellationTokenSource();
+        var certsToken = NeverFiringToken();
+        apps.GetReloadToken().Returns(_ => new CancellationChangeToken(appsCts.Token));
+        certs.GetReloadToken().Returns(certsToken);
+
+        using var selector = new SniCertificateSelector(certs, apps);
+        selector.Select("ha.home.lan").ShouldNotBeNull();
+
+        // Swap CTS before cancel so the re-registration step in ChangeToken.OnChange
+        // binds against the new (uncanceled) token instead of looping infinitely.
+        var firing = appsCts;
+        appsCts = new CancellationTokenSource();
+        Should.NotThrow(() => firing.Cancel());
+
+        // Reload threw; the previous good binding must still serve.
+        selector.Select("ha.home.lan").ShouldNotBeNull();
+    }
 }

@@ -50,8 +50,16 @@ else
         {
             <div class="error">@_error</div>
         }
+        @if (_view == ViewMode.Advanced && _steps.Count > 0)
+        {
+            <ProgressLog Steps="_steps" />
+        }
         <div class="form-actions">
             <button type="button" class="btn primary" disabled="@_saving" @onclick="SaveAdvancedAsync">
+                @if (_saving)
+                {
+                    <span class="spinner" aria-hidden="true"></span>
+                }
                 @(_saving ? "Saving…" : "Save")
             </button>
         </div>
@@ -219,8 +227,19 @@ else
             <div class="error">@_error</div>
         }
 
+        @if (_view == ViewMode.Simple && _steps.Count > 0)
+        {
+            <ProgressLog Steps="_steps" />
+        }
+
         <div class="form-actions">
-            <button type="submit" class="btn primary" disabled="@_saving">@(_saving ? "Saving…" : "Save")</button>
+            <button type="submit" class="btn primary" disabled="@_saving">
+                @if (_saving)
+                {
+                    <span class="spinner" aria-hidden="true"></span>
+                }
+                @(_saving ? "Saving…" : "Save")
+            </button>
         </div>
     </EditForm>
     </div>
@@ -248,6 +267,18 @@ else
     private ViewMode _view = ViewMode.Simple;
     private string _jsonBuffer = "{}";
     private string? _jsonError;
+    private readonly List<ProgressStep> _steps = new();
+    private IProgress<string>? _progress;
+
+    protected override void OnInitialized()
+    {
+        // Constructed on the Blazor circuit, so callbacks resume on the right context.
+        _progress = new Progress<string>(message =>
+        {
+            _steps.Add(new ProgressStep(DateTimeOffset.Now, message));
+            StateHasChanged();
+        });
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -283,15 +314,16 @@ else
     {
         _saving = true;
         _error = null;
+        _steps.Clear();
         try
         {
             if (_isNew)
             {
-                await Service.CreateAsync(_model);
+                await Service.CreateAsync(_model, progress: _progress);
             }
             else
             {
-                await Service.UpdateAsync(Id!.Value, _model);
+                await Service.UpdateAsync(Id!.Value, _model, progress: _progress);
             }
             Nav.NavigateTo("applications");
         }
@@ -333,6 +365,7 @@ else
         _saving = true;
         _error = null;
         _jsonError = null;
+        _steps.Clear();
 
         if (!TryParseJsonBuffer(out var parsed, out var parseError))
         {
@@ -346,13 +379,13 @@ else
             // Preserve identity for an update — the form's URL says which app this is.
             if (_isNew)
             {
-                var created = await Service.CreateAsync(parsed!);
+                var created = await Service.CreateAsync(parsed!, progress: _progress);
                 _model = created;
                 Nav.NavigateTo("applications");
             }
             else
             {
-                var updated = await Service.UpdateAsync(Id!.Value, parsed!);
+                var updated = await Service.UpdateAsync(Id!.Value, parsed!, progress: _progress);
                 _model = updated;
                 Nav.NavigateTo("applications");
             }

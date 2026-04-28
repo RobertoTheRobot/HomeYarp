@@ -48,9 +48,18 @@
         <div class="error">@_error</div>
     }
 
+    @if (_steps.Count > 0)
+    {
+        <ProgressLog Steps="_steps" />
+    }
+
     <div class="form-actions">
         <button type="submit" class="btn primary" disabled="@_busy">
-            @(_busy ? "Requesting… (this can take 30-60s)" : "Request certificate")
+            @if (_busy)
+            {
+                <span class="spinner" aria-hidden="true"></span>
+            }
+            @(_busy ? "Requesting…" : "Request certificate")
         </button>
     </div>
 </EditForm>
@@ -61,10 +70,22 @@
     private string _hostnames = string.Empty;
     private bool _busy;
     private string? _error;
+    private readonly List<ProgressStep> _steps = new();
+    private IProgress<string>? _progress;
+
+    protected override void OnInitialized()
+    {
+        _progress = new Progress<string>(message =>
+        {
+            _steps.Add(new ProgressStep(DateTimeOffset.Now, message));
+            StateHasChanged();
+        });
+    }
 
     private async Task RequestAsync()
     {
         _error = null;
+        _steps.Clear();
         var hosts = (_hostnames ?? string.Empty)
             .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
@@ -81,7 +102,8 @@
             await Acme.IssueAsync(
                 _name,
                 string.IsNullOrWhiteSpace(_friendlyName) ? null : _friendlyName,
-                hosts);
+                hosts,
+                progress: _progress);
             Nav.NavigateTo("certificates");
         }
         catch (Exception ex)

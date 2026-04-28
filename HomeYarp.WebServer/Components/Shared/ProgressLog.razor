@@ -1,0 +1,17 @@
+@* Renders a live, append-only log of steps reported by an IProgress<string>.
+   Used by ApplicationEdit, CertificateRequest, and CertificateGenerate to give
+   real-time feedback during multi-step server operations. *@
+
+<div class="progress-log" role="log" aria-live="polite">
+    @foreach (var step in Steps)
+    {
+        <div class="progress-log-row">
+            <span class="progress-log-time">@step.Timestamp.ToString("HH:mm:ss")</span>
+            <span class="progress-log-msg">@step.Message</span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ProgressStep> Steps { get; set; } = Array.Empty<ProgressStep>();
+}

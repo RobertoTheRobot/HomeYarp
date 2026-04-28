@@ -1,7 +1,14 @@
 <Solution>
-  <Project Path="HomeYarp.Domain/HomeYarp.Domain.csproj" />
+  <Folder Name="/Solution Items/">
+    <File Path=".env" />
+    <File Path="CLAUDE.md" />
+    <File Path="compose.yaml" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
   <Project Path="HomeYarp.Application/HomeYarp.Application.csproj" />
+  <Project Path="HomeYarp.Domain/HomeYarp.Domain.csproj" />
   <Project Path="HomeYarp.Persistance/HomeYarp.Persistance.csproj" />
-  <Project Path="HomeYarp.WebServer/HomeYarp.WebServer.csproj" />
   <Project Path="HomeYarp.Tests/HomeYarp.Tests.csproj" />
+  <Project Path="HomeYarp.WebServer/HomeYarp.WebServer.csproj" />
 </Solution>

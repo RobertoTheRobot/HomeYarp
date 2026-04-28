@@ -33,7 +33,8 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
         IReadOnlyList<string> hostnames,
         CertificateKeyType keyType,
         int validityDays,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -45,7 +46,7 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             throw new ArgumentException("Validity days must be greater than zero.", nameof(validityDays));
         }
 
-        return IssueInternalAsync(name, friendlyName, hostnames, keyType, validityDays, cancellationToken);
+        return IssueInternalAsync(name, friendlyName, hostnames, keyType, validityDays, cancellationToken, progress);
     }
 
     public Task<Certificate> RegenerateAsync(Guid certificateId, CancellationToken cancellationToken = default)
@@ -96,8 +97,10 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
         IReadOnlyList<string> hostnames,
         CertificateKeyType keyType,
         int validityDays,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<string>? progress = null)
     {
+        progress?.Report($"Checking certificate name uniqueness ('{name}')");
         var existing = await _certificates.GetByNameAsync(name, cancellationToken);
         if (existing is not null)
         {
@@ -122,7 +125,8 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             createdAt: null,
             existingIssuedAt: null,
             regenerating: false,
-            cancellationToken);
+            cancellationToken,
+            progress);
     }
 
     private async Task<Certificate> GenerateAndSaveAsync(
@@ -135,7 +139,8 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
         DateTimeOffset? createdAt,
         DateTimeOffset? existingIssuedAt,
         bool regenerating,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<string>? progress = null)
     {
         var gate = CertGates.GetOrAdd(certificateId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
@@ -145,6 +150,8 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             var notBefore = now.AddMinutes(-5);
             var notAfter = now.AddDays(validityDays);
 
+            progress?.Report($"Generating {keyType} key pair");
+            progress?.Report($"Building self-signed certificate (CN={hostnames[0]}, {hostnames.Count} SAN entr{(hostnames.Count == 1 ? "y" : "ies")}, valid {validityDays} days)");
             var (certificatePem, privateKeyPem, snapshot) = Generate(hostnames, keyType, notBefore, notAfter);
 
             var certificate = new Certificate
@@ -169,11 +176,13 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
                 }
             };
 
+            progress?.Report("Persisting certificate (PEM + key) to disk");
             await _certificates.SaveAsync(
                 certificate,
                 new CertificateMaterial(certificatePem, privateKeyPem),
                 cancellationToken);
 
+            progress?.Report($"Reloading SNI selector (thumbprint {certificate.Thumbprint[..12]}…)");
             _logger.LogInformation(
                 "Self-signed cert {Action} for '{CertName}' ({CertId}); thumbprint={Thumbprint} valid {NotBefore:o} → {NotAfter:o}",
                 regenerating ? "regenerated" : "issued",

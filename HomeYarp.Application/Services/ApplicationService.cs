@@ -39,8 +39,9 @@ public sealed class ApplicationService : IApplicationService
     public Task<Domain.Application?> GetAsync(Guid id, CancellationToken cancellationToken = default)
         => _repository.GetByIdAsync(id, cancellationToken);
 
-    public async Task<Domain.Application> CreateAsync(Domain.Application application, CancellationToken cancellationToken = default)
+    public async Task<Domain.Application> CreateAsync(Domain.Application application, CancellationToken cancellationToken = default, IProgress<string>? progress = null)
     {
+        progress?.Report("Validating application configuration");
         try
         {
             Validate(application);
@@ -51,6 +52,7 @@ public sealed class ApplicationService : IApplicationService
             throw;
         }
 
+        progress?.Report($"Checking name uniqueness ('{application.Name}')");
         var existing = await _repository.GetByNameAsync(application.Name, cancellationToken);
         if (existing is not null)
         {
@@ -58,12 +60,14 @@ public sealed class ApplicationService : IApplicationService
             throw new InvalidOperationException($"An application named '{application.Name}' already exists.");
         }
 
-        await EnsureAutoManagedCertificateAsync(application, previous: null, cancellationToken);
+        await EnsureAutoManagedCertificateAsync(application, previous: null, cancellationToken, progress);
 
+        progress?.Report("Persisting application to disk");
         application.CreatedAt = DateTimeOffset.UtcNow;
         application.UpdatedAt = application.CreatedAt;
         await _repository.AddAsync(application, cancellationToken);
 
+        progress?.Report("Reloading proxy routes and SNI bindings");
         _logger.LogInformation(
             "Application created: '{AppName}' ({AppId}) — enabled={Enabled} routes={RouteCount} dest={DestinationCount} tls=Mode:{TlsMode}/Source:{TlsSource}",
             application.Name,
@@ -73,11 +77,13 @@ public sealed class ApplicationService : IApplicationService
             application.Cluster.Destinations.Count,
             application.Tls.Mode,
             application.Tls.Source);
+        progress?.Report("Done");
         return application;
     }
 
-    public async Task<Domain.Application> UpdateAsync(Guid id, Domain.Application application, CancellationToken cancellationToken = default)
+    public async Task<Domain.Application> UpdateAsync(Guid id, Domain.Application application, CancellationToken cancellationToken = default, IProgress<string>? progress = null)
     {
+        progress?.Report("Validating application configuration");
         try
         {
             Validate(application);
@@ -88,9 +94,11 @@ public sealed class ApplicationService : IApplicationService
             throw;
         }
 
+        progress?.Report("Loading existing application");
         var existing = await _repository.GetByIdAsync(id, cancellationToken)
             ?? throw new KeyNotFoundException($"Application '{id}' not found.");
 
+        progress?.Report($"Checking name uniqueness ('{application.Name}')");
         var byName = await _repository.GetByNameAsync(application.Name, cancellationToken);
         if (byName is not null && byName.Id != id)
         {
@@ -102,8 +110,9 @@ public sealed class ApplicationService : IApplicationService
             throw new InvalidOperationException($"Another application named '{application.Name}' already exists.");
         }
 
-        await EnsureAutoManagedCertificateAsync(application, previous: existing, cancellationToken);
+        await EnsureAutoManagedCertificateAsync(application, previous: existing, cancellationToken, progress);
 
+        progress?.Report("Persisting application to disk");
         existing.Name = application.Name;
         existing.DisplayName = application.DisplayName;
         existing.Description = application.Description;
@@ -116,6 +125,7 @@ public sealed class ApplicationService : IApplicationService
 
         await _repository.UpdateAsync(existing, cancellationToken);
 
+        progress?.Report("Reloading proxy routes and SNI bindings");
         _logger.LogInformation(
             "Application updated: '{AppName}' ({AppId}) — enabled={Enabled} routes={RouteCount} dest={DestinationCount} tls=Mode:{TlsMode}/Source:{TlsSource}",
             existing.Name,
@@ -125,6 +135,7 @@ public sealed class ApplicationService : IApplicationService
             existing.Cluster.Destinations.Count,
             existing.Tls.Mode,
             existing.Tls.Source);
+        progress?.Report("Done");
         return existing;
     }
 
@@ -158,7 +169,8 @@ public sealed class ApplicationService : IApplicationService
     private async Task EnsureAutoManagedCertificateAsync(
         Domain.Application incoming,
         Domain.Application? previous,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<string>? progress = null)
     {
         var prevSource = previous?.Tls.Source ?? TlsCertificateSource.Manual;
         var prevCertId = previous?.Tls.CertificateId;
@@ -167,6 +179,7 @@ public sealed class ApplicationService : IApplicationService
         // Source switch (Internal↔External, or auto→Manual): drop the previously auto-managed cert.
         if (prevSource != TlsCertificateSource.Manual && prevSource != newSource && prevCertId is { } oldId)
         {
+            progress?.Report($"TLS source changed {prevSource} → {newSource}; deleting prior auto-managed certificate");
             _logger.LogInformation(
                 "App '{AppName}' ({AppId}): TLS source changing {From} → {To}; deleting prior auto-managed cert {CertId}",
                 incoming.Name,
@@ -186,6 +199,7 @@ public sealed class ApplicationService : IApplicationService
 
         if (newSource == TlsCertificateSource.External)
         {
+            progress?.Report("Verifying ACME (Let's Encrypt) configuration");
             AcmeOptionsValidator.EnsureConfigured(_acmeOptions.CurrentValue);
         }
 
@@ -195,6 +209,7 @@ public sealed class ApplicationService : IApplicationService
             var existingCert = await _certificates.GetByIdAsync(existingId, cancellationToken);
             if (existingCert is not null && SameHostnames(existingCert, newSource, hostnames))
             {
+                progress?.Report("Hostnames unchanged; reusing existing certificate");
                 _logger.LogDebug(
                     "App '{AppName}' ({AppId}): hostnames unchanged for {Source}; reusing cert {CertId}",
                     incoming.Name,
@@ -209,6 +224,7 @@ public sealed class ApplicationService : IApplicationService
             {
                 if (newSource == TlsCertificateSource.Internal)
                 {
+                    progress?.Report($"Hostnames changed; regenerating self-signed cert for [{string.Join(", ", hostnames)}]");
                     _logger.LogInformation(
                         "App '{AppName}' ({AppId}): hostnames changed for Internal; regenerating self-signed cert {CertId} for [{Hostnames}]",
                         incoming.Name,
@@ -234,6 +250,7 @@ public sealed class ApplicationService : IApplicationService
         var certName = BuildCertName(incoming.Name, newSource);
         var friendly = BuildFriendlyName(incoming, newSource);
 
+        progress?.Report($"Provisioning {newSource} certificate '{certName}' for [{string.Join(", ", hostnames)}]");
         _logger.LogInformation(
             "App '{AppName}' ({AppId}): provisioning {Source} certificate '{CertName}' for [{Hostnames}]",
             incoming.Name,
@@ -243,9 +260,10 @@ public sealed class ApplicationService : IApplicationService
             string.Join(",", hostnames));
 
         var created = newSource == TlsCertificateSource.Internal
-            ? await _selfSigned.IssueAsync(certName, friendly, hostnames, CertificateKeyType.Ec256, validityDays: 365, cancellationToken)
-            : await _acme.IssueAsync(certName, friendly, hostnames, cancellationToken);
+            ? await _selfSigned.IssueAsync(certName, friendly, hostnames, CertificateKeyType.Ec256, validityDays: 365, cancellationToken, progress)
+            : await _acme.IssueAsync(certName, friendly, hostnames, cancellationToken, progress);
 
+        progress?.Report($"Certificate provisioned (valid until {created.NotAfter:yyyy-MM-dd})");
         _logger.LogInformation(
             "App '{AppName}' ({AppId}): provisioned {Source} certificate {CertId} ('{CertName}') valid until {NotAfter:o}",
             incoming.Name,

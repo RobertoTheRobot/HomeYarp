@@ -64,11 +64,6 @@ try
         };
     });
 
-    if (app.Environment.IsDevelopment())
-    {
-        app.MapOpenApi();
-    }
-
     app.UseStaticFiles();
     app.UseAntiforgery();
     app.UseAuthorization();
@@ -84,10 +79,28 @@ try
         return Results.NotFound();
     });
 
-    app.MapControllers();
+    // The management surface (UI + REST API + OpenAPI) and the YARP proxy share
+    // listeners. Without a host filter, Razor's literal `/` outranks YARP's
+    // `/{**catch-all}` and HomeYarp's own pages are served on every proxied
+    // hostname. Set HomeYarp:Management:Hosts to scope it.
+    var managementHosts = app.Configuration
+        .GetSection("HomeYarp:Management:Hosts")
+        .Get<string[]>() ?? [];
 
-    app.MapRazorComponents<App>()
-        .AddInteractiveServerRenderMode();
+    var controllers = app.MapControllers();
+    var razor = app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+    if (managementHosts.Length > 0)
+    {
+        controllers.RequireHost(managementHosts);
+        razor.RequireHost(managementHosts);
+        Log.Information("Management surface restricted to hosts: {Hosts}", managementHosts);
+    }
+
+    if (app.Environment.IsDevelopment())
+    {
+        var openApi = app.MapOpenApi();
+        if (managementHosts.Length > 0) openApi.RequireHost(managementHosts);
+    }
 
     app.MapReverseProxy();
 

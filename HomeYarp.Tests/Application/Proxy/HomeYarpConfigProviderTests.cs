@@ -221,4 +221,34 @@ public class HomeYarpConfigProviderTests
         config.Routes.ShouldHaveSingleItem();
         config.Routes[0].Match.Hosts.ShouldBeNull();
     }
+
+    [Fact]
+    public void Reload_WhenBuildConfigThrows_DoesNotPropagateAndKeepsPriorConfig()
+    {
+        // Regression: a throwing reload used to bubble up to the controller via
+        // CTS.Cancel(), so the save HTTP request returned 500 and the live YARP
+        // config was left half-updated until restart.
+        var first = ApplicationFactory.Create(name: "first", routeHosts: new[] { "x.lan" });
+        var calls = 0;
+        var repo = Substitute.For<IApplicationRepository>();
+        repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            calls++;
+            if (calls == 1) return Task.FromResult<IReadOnlyList<DomainApplication>>(new[] { first });
+            throw new InvalidOperationException("simulated reload failure");
+        });
+        var cts = new CancellationTokenSource();
+        repo.GetReloadToken().Returns(_ => new CancellationChangeToken(cts.Token));
+
+        using var provider = new HomeYarpConfigProvider(repo);
+        var initial = provider.GetConfig();
+        initial.Routes.ShouldHaveSingleItem();
+
+        var firing = cts;
+        cts = new CancellationTokenSource();
+        Should.NotThrow(() => firing.Cancel());
+
+        // BuildConfig threw inside ReloadConfig — the live snapshot must remain on the prior config.
+        provider.GetConfig().ShouldBeSameAs(initial);
+    }
 }

@@ -69,6 +69,20 @@ public sealed class SniCertificateSelector : IDisposable
 
     private void Reload()
     {
+        try
+        {
+            ReloadCore();
+        }
+        catch (Exception ex)
+        {
+            // Swallow so the change-token re-registration in ChangeToken.OnChange still runs.
+            // Cert bindings stay on the previous snapshot — restart re-reads from disk.
+            _logger.LogError(ex, "SNI selector reload failed; cert bindings NOT updated. Restart to recover.");
+        }
+    }
+
+    private void ReloadCore()
+    {
         _logger.LogDebug("SNI selector: reload triggered (apps or certs changed)");
 
         var apps = _applications.GetAllAsync().GetAwaiter().GetResult();
@@ -162,18 +176,15 @@ public sealed class SniCertificateSelector : IDisposable
             }
         }
 
-        List<X509Certificate2> oldLoaded;
         lock (_lock)
         {
-            oldLoaded = _loaded;
             _loaded = loaded.Values.ToList();
             _byHost = byHost;
         }
-
-        foreach (var cert in oldLoaded)
-        {
-            cert.Dispose();
-        }
+        // Old X509Certificate2 instances are no longer referenced by _byHost or _loaded.
+        // Don't dispose eagerly — Schannel may still hold them for in-flight handshakes,
+        // and disposing under it produces "Cannot find the requested object" failures
+        // on the very next handshake. The finalizer reclaims native handles on GC.
 
         _logger.LogInformation(
             "SNI selector: reload complete — {HostCount} host binding(s), {CertCount} unique cert(s) loaded",

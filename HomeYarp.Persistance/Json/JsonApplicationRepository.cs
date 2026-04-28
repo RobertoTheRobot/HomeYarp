@@ -212,7 +212,13 @@ public sealed class JsonApplicationRepository : IApplicationRepository
     private void SignalReload()
     {
         var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
-        try { oldCts.Cancel(); } catch (ObjectDisposedException) { }
+        // Cancel runs registered ChangeToken callbacks synchronously on this thread.
+        // Each consumer (HomeYarpConfigProvider, SniCertificateSelector) catches its
+        // own exceptions, so a bad cert can't propagate back through the save HTTP
+        // request and leave the in-memory snapshot half-swapped.
+        try { oldCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { _logger.LogError(ex, "Application reload callbacks threw"); }
         oldCts.Dispose();
         _logger.LogDebug("JsonApplicationRepository reload signal fired");
     }

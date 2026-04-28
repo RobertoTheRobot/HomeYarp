@@ -28,16 +28,25 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
 
     private void ReloadConfig()
     {
-        _logger.LogInformation("YARP config reload signaled by application repository");
-        var newConfig = BuildConfig();
-        HomeYarpConfig oldConfig;
-        lock (_lock)
+        try
         {
-            oldConfig = _config;
-            _config = newConfig;
+            _logger.LogInformation("YARP config reload signaled by application repository");
+            var newConfig = BuildConfig();
+            HomeYarpConfig oldConfig;
+            lock (_lock)
+            {
+                oldConfig = _config;
+                _config = newConfig;
+            }
+            oldConfig.SignalChange();
+            _logger.LogDebug("YARP config swap complete; old snapshot signalled change");
         }
-        oldConfig.SignalChange();
-        _logger.LogDebug("YARP config swap complete; old snapshot signalled change");
+        catch (Exception ex)
+        {
+            // Swallow so the change-token re-registration in ChangeToken.OnChange still runs.
+            // The live YARP config is left on the previous (working) snapshot — restart re-reads from disk.
+            _logger.LogError(ex, "YARP config reload failed; live config NOT updated. Disk state is current; restart to recover.");
+        }
     }
 
     private HomeYarpConfig BuildConfig()
