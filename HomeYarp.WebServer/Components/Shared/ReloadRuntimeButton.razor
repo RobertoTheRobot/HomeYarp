@@ -5,31 +5,28 @@
 @inject NavigationManager Nav
 @implements IDisposable
 
-<div class="reload-runtime @(_busy ? "busy" : null)">
-    <button type="button"
-            class="btn @(Compact ? null : "primary")"
-            disabled="@_busy"
-            @onclick="ReloadAsync"
-            title="Re-apply on-disk applications and certificates to the live proxy">
-        @if (_busy)
-        {
-            <span class="spinner" aria-hidden="true"></span>
-        }
+<MudStack Spacing="2">
+    <MudButton Variant="@(Compact ? Variant.Outlined : Variant.Filled)"
+               Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Refresh"
+               Disabled="_busy"
+               OnClick="ReloadAsync"
+               FullWidth="@Compact">
         @(_busy ? "Reloading…" : "Reload runtime")
-    </button>
+    </MudButton>
 
     @if (!Compact)
     {
-        <div class="reload-runtime-meta muted">
+        <MudText Typo="Typo.caption">
             @if (ReloadService.LastReloadedAt is { } when)
             {
-                <span>Last reload: @when.ToLocalTime().ToString("HH:mm:ss")</span>
+                @($"Last reload: {when.ToLocalTime():HH:mm:ss}")
             }
             else
             {
-                <span>Not reloaded yet (running on startup snapshot)</span>
+                @("Not reloaded yet (running on startup snapshot)")
             }
-        </div>
+        </MudText>
     }
 
     @if (_steps.Count > 0)
@@ -39,9 +36,11 @@
 
     @if (!string.IsNullOrEmpty(_error))
     {
-        <div class="error">@_error</div>
+        <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+            @_error
+        </MudAlert>
     }
-</div>
+</MudStack>
 
 @code {
     /// <summary>When true, render only the button (no metadata row). Use in tight spots like the sidebar.</summary>

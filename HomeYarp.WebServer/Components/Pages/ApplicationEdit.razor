@@ -11,237 +11,288 @@
 
 <PageTitle>@(_isNew ? "New application" : _model.Name) · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>@(_isNew ? "New application" : $"Edit {_model.Name}")</h1>
-    <a class="btn" href="applications">Back</a>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">@(_isNew ? "New application" : $"Edit {_model.Name}")</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowBack" Href="applications">Back</MudButton>
+</MudStack>
 
 @if (_loading)
 {
-    <p>Loading…</p>
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
 }
 else if (_notFound)
 {
-    <p class="empty">Application not found.</p>
+    <MudAlert Severity="Severity.Warning">Application not found.</MudAlert>
 }
 else
 {
-    <div class="view-toggle">
-        <button type="button"
-                class="view-toggle-btn @(_view == ViewMode.Simple ? "active" : null)"
-                @onclick="SwitchToSimple">Simple</button>
-        <button type="button"
-                class="view-toggle-btn @(_view == ViewMode.Advanced ? "active" : null)"
-                @onclick="SwitchToAdvanced">Advanced (JSON)</button>
-    </div>
+    <MudToggleGroup T="ViewMode"
+                    Value="_view"
+                    ValueChanged="OnViewChanged"
+                    Color="Color.Primary"
+                    Outlined="true"
+                    Class="mb-4">
+        <MudToggleItem Value="@ViewMode.Simple">Simple</MudToggleItem>
+        <MudToggleItem Value="@ViewMode.Advanced">Advanced (JSON)</MudToggleItem>
+    </MudToggleGroup>
 
-    <div class="advanced-view view-pane @(_view == ViewMode.Advanced ? null : "hidden")">
-        <p class="muted">
-            Edit the application's JSON directly. Supports everything in the domain — including
-            YARP transforms, active/passive health checks, and per-cluster HTTP request options
-            that aren't exposed in the simple form.
-        </p>
-        <JsonEditor @bind-Value="_jsonBuffer" Height="600px" />
-        @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_jsonError))
-        {
-            <div class="error">@_jsonError</div>
-        }
-        @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_error))
-        {
-            <div class="error">@_error</div>
-        }
-        @if (_view == ViewMode.Advanced && _steps.Count > 0)
-        {
-            <ProgressLog Steps="_steps" />
-        }
-        <div class="form-actions">
-            <button type="button" class="btn primary" disabled="@_saving" @onclick="SaveAdvancedAsync">
-                @if (_saving)
-                {
-                    <span class="spinner" aria-hidden="true"></span>
-                }
-                @(_saving ? "Saving…" : "Save")
-            </button>
-        </div>
-    </div>
+    <div class="@(_view == ViewMode.Advanced ? null : "d-none")">
+        <MudPaper Outlined="true" Class="pa-4 mb-3">
+            <MudText Typo="Typo.body2" Class="mb-3">
+                Edit the application's JSON directly. Supports everything in the domain — including
+                YARP transforms, active/passive health checks, and per-cluster HTTP request options
+                that aren't exposed in the simple form.
+            </MudText>
+            <JsonEditor @bind-Value="_jsonBuffer" Height="600px" />
 
-    <div class="view-pane @(_view == ViewMode.Simple ? null : "hidden")">
-    <EditForm Model="_model" OnValidSubmit="SaveAsync" FormName="application-edit">
-        <fieldset>
-            <legend>Identity</legend>
-            <label>
-                Name (slug)
-                <input class="input" @bind="_model.Name" required />
-            </label>
-            <label>
-                Display name
-                <input class="input" @bind="_model.DisplayName" />
-            </label>
-            <label>
-                Description
-                <textarea class="input" rows="2" @bind="_model.Description"></textarea>
-            </label>
-            <label class="checkbox">
-                <input type="checkbox" @bind="_model.Enabled" />
-                Enabled
-            </label>
-            <label>
-                Authorization policy (optional)
-                <input class="input" @bind="_model.AuthorizationPolicy" />
-            </label>
-        </fieldset>
-
-        <fieldset>
-            <legend>Routes</legend>
-            @for (var i = 0; i < _model.Routes.Count; i++)
+            @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_jsonError))
             {
-                var route = _model.Routes[i];
-                var index = i;
-                <div class="row">
-                    <label>
-                        Hosts (comma separated)
-                        <input class="input" value="@string.Join(", ", route.Hosts)"
-                               @onchange="e => UpdateHosts(index, e.Value?.ToString())" />
-                    </label>
-                    <label>
-                        Path
-                        <input class="input" @bind="route.Path" placeholder="/{**catch-all}" />
-                    </label>
-                    <label>
-                        Order
-                        <input class="input narrow" type="number" @bind="route.Order" />
-                    </label>
-                    <button type="button" class="btn danger" @onclick="() => _model.Routes.RemoveAt(index)">Remove</button>
+                <MudAlert Severity="Severity.Error" Class="mt-3" ShowCloseIcon="true" CloseIconClicked="() => _jsonError = null">
+                    @_jsonError
+                </MudAlert>
+            }
+            @if (_view == ViewMode.Advanced && !string.IsNullOrEmpty(_error))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-3" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+                    @_error
+                </MudAlert>
+            }
+            @if (_view == ViewMode.Advanced && _steps.Count > 0)
+            {
+                <div class="mt-3">
+                    <ProgressLog Steps="_steps" />
                 </div>
             }
-            <button type="button" class="btn" @onclick="AddRoute">+ Add route</button>
-        </fieldset>
 
-        <fieldset>
-            <legend>TLS</legend>
-            <label>
-                Mode
-                <select class="input" @bind="_model.Tls.Mode">
-                    <option value="@TlsMode.None">None (HTTP only)</option>
-                    <option value="@TlsMode.Offload">Offload (proxy terminates TLS)</option>
-                    <option value="@TlsMode.Passthrough">Passthrough (raw TCP tunnel)</option>
-                </select>
-            </label>
-            @if (_model.Tls.Mode == TlsMode.Offload)
-            {
-                <label>
-                    Certificate source
-                </label>
-                <div class="radio-group">
-                    <label class="checkbox">
-                        <input type="radio" name="cert-source"
-                               checked="@(_model.Tls.Source == TlsCertificateSource.Internal)"
-                               @onchange="() => SetSource(TlsCertificateSource.Internal)" />
-                        Internal &mdash; HomeYarp generates a self-signed certificate for the route hostnames
-                    </label>
-                    <label class="checkbox">
-                        <input type="radio" name="cert-source"
-                               checked="@(_model.Tls.Source == TlsCertificateSource.External)"
-                               disabled="@(!_acmeReady)"
-                               @onchange="() => SetSource(TlsCertificateSource.External)" />
-                        External &mdash; HomeYarp requests a certificate from Let's Encrypt
-                        @if (!_acmeReady)
-                        {
-                            <span class="muted"> (configure ACME under <a href="settings">Settings</a> first)</span>
-                        }
-                    </label>
-                    <label class="checkbox">
-                        <input type="radio" name="cert-source"
-                               checked="@(_model.Tls.Source == TlsCertificateSource.Manual)"
-                               @onchange="() => SetSource(TlsCertificateSource.Manual)" />
-                        Use existing certificate
-                    </label>
-                </div>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Save"
+                       Disabled="_saving"
+                       OnClick="SaveAdvancedAsync"
+                       Class="mt-3">
+                @(_saving ? "Saving…" : "Save")
+            </MudButton>
+        </MudPaper>
+    </div>
 
-                @if (_model.Tls.Source == TlsCertificateSource.Manual)
-                {
-                    <label>
-                        Certificate
-                        <select class="input" @bind="_model.Tls.CertificateId">
-                            <option value="">-- select a certificate --</option>
-                            @foreach (var cert in _certificates)
-                            {
-                                <option value="@cert.Id">@cert.Name (@cert.NotAfter.ToString("yyyy-MM-dd"))</option>
-                            }
-                        </select>
-                    </label>
-                    @if (_certificates.Count == 0)
+    <div class="@(_view == ViewMode.Simple ? null : "d-none")">
+        <MudGrid Spacing="3">
+            <MudItem xs="12">
+                <MudPaper Outlined="true" Class="pa-4">
+                    <MudText Typo="Typo.h6" Class="mb-3">Identity</MudText>
+                    <MudStack Spacing="3">
+                        <MudTextField @bind-Value="_model.Name"
+                                      Label="Name (slug)"
+                                      Required="true"
+                                      RequiredError="Name is required"
+                                      Variant="Variant.Outlined" />
+                        <MudTextField @bind-Value="_model.DisplayName"
+                                      Label="Display name"
+                                      Variant="Variant.Outlined" />
+                        <MudTextField @bind-Value="_model.Description"
+                                      Label="Description"
+                                      Lines="2"
+                                      Variant="Variant.Outlined" />
+                        <MudSwitch T="bool" @bind-Value="_model.Enabled" Label="Enabled" Color="Color.Primary" />
+                        <MudTextField @bind-Value="_model.AuthorizationPolicy"
+                                      Label="Authorization policy (optional)"
+                                      Variant="Variant.Outlined" />
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudPaper Outlined="true" Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h6">Routes</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Add"
+                                   Size="Size.Small"
+                                   OnClick="AddRoute">Add route</MudButton>
+                    </MudStack>
+                    @for (var i = 0; i < _model.Routes.Count; i++)
                     {
-                        <p class="muted">No certificates yet — <a href="certificates/upload">upload one</a> first.</p>
+                        var route = _model.Routes[i];
+                        var index = i;
+                        <MudGrid Spacing="2" Class="mb-2">
+                            <MudItem xs="12" md="5">
+                                <MudTextField T="string"
+                                              Value="@string.Join(", ", route.Hosts)"
+                                              ValueChanged="@(v => UpdateHosts(index, v))"
+                                              Label="Hosts (comma separated)"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="12" md="4">
+                                <MudTextField @bind-Value="route.Path"
+                                              Label="Path"
+                                              Placeholder="/{**catch-all}"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="8" md="2">
+                                <MudNumericField T="int?" @bind-Value="route.Order"
+                                                 Label="Order"
+                                                 Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="4" md="1" Class="d-flex align-center">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                               Color="Color.Error"
+                                               OnClick="() => _model.Routes.RemoveAt(index)" />
+                            </MudItem>
+                        </MudGrid>
                     }
-                }
-                else
-                {
-                    <p class="muted">
-                        Hostnames are taken from the routes above. Save the application to create or update the certificate.
-                        @if (_model.Tls.Source == TlsCertificateSource.External)
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudPaper Outlined="true" Class="pa-4">
+                    <MudText Typo="Typo.h6" Class="mb-3">TLS</MudText>
+                    <MudStack Spacing="3">
+                        <MudSelect T="TlsMode" @bind-Value="_model.Tls.Mode" Label="Mode" Variant="Variant.Outlined">
+                            <MudSelectItem Value="@TlsMode.None">None (HTTP only)</MudSelectItem>
+                            <MudSelectItem Value="@TlsMode.Offload">Offload (proxy terminates TLS)</MudSelectItem>
+                            <MudSelectItem Value="@TlsMode.Passthrough">Passthrough (raw TCP tunnel)</MudSelectItem>
+                        </MudSelect>
+
+                        @if (_model.Tls.Mode == TlsMode.Offload)
                         {
-                            <span> Each hostname must publicly resolve to this server, and inbound port 80 must reach the HTTP listener.</span>
+                            <MudText Typo="Typo.subtitle2">Certificate source</MudText>
+                            <MudRadioGroup T="TlsCertificateSource"
+                                           Value="_model.Tls.Source"
+                                           ValueChanged="SetSource">
+                                <MudRadio T="TlsCertificateSource" Value="@TlsCertificateSource.Internal" Color="Color.Primary">
+                                    Internal — HomeYarp generates a self-signed certificate for the route hostnames
+                                </MudRadio>
+                                <MudRadio T="TlsCertificateSource" Value="@TlsCertificateSource.External"
+                                          Color="Color.Primary"
+                                          Disabled="@(!_acmeReady)">
+                                    External — HomeYarp requests a certificate from Let's Encrypt
+                                    @if (!_acmeReady)
+                                    {
+                                        <MudText Typo="Typo.caption" Class="d-inline">
+                                            (configure ACME under <MudLink Href="settings">Settings</MudLink> first)
+                                        </MudText>
+                                    }
+                                </MudRadio>
+                                <MudRadio T="TlsCertificateSource" Value="@TlsCertificateSource.Manual" Color="Color.Primary">
+                                    Use existing certificate
+                                </MudRadio>
+                            </MudRadioGroup>
+
+                            @if (_model.Tls.Source == TlsCertificateSource.Manual)
+                            {
+                                <MudSelect T="Guid?" @bind-Value="_model.Tls.CertificateId"
+                                           Label="Certificate" Variant="Variant.Outlined"
+                                           Clearable="true">
+                                    @foreach (var cert in _certificates)
+                                    {
+                                        <MudSelectItem T="Guid?" Value="@((Guid?)cert.Id)">
+                                            @cert.Name (@cert.NotAfter.ToString("yyyy-MM-dd"))
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                                @if (_certificates.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption">
+                                        No certificates yet — <MudLink Href="certificates/upload">upload one</MudLink> first.
+                                    </MudText>
+                                }
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Info" Dense="true">
+                                    Hostnames are taken from the routes above. Save the application to create or update the certificate.
+                                    @if (_model.Tls.Source == TlsCertificateSource.External)
+                                    {
+                                        <span> Each hostname must publicly resolve to this server, and inbound port 80 must reach the HTTP listener.</span>
+                                    }
+                                </MudAlert>
+                            }
                         }
-                    </p>
-                }
-            }
-            else if (_model.Tls.Mode == TlsMode.Passthrough)
+                        else if (_model.Tls.Mode == TlsMode.Passthrough)
+                        {
+                            <MudAlert Severity="Severity.Info" Dense="true">
+                                Passthrough forwards encrypted bytes to the first destination. The backend must terminate TLS itself. Reachable on the passthrough port (default :5444).
+                            </MudAlert>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudPaper Outlined="true" Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h6">Cluster</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Add"
+                                   Size="Size.Small"
+                                   OnClick="AddDestination">Add destination</MudButton>
+                    </MudStack>
+                    <MudTextField @bind-Value="_model.Cluster.LoadBalancingPolicy"
+                                  Label="Load balancing policy (optional)"
+                                  Placeholder="RoundRobin"
+                                  Variant="Variant.Outlined"
+                                  Class="mb-3" />
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Destinations</MudText>
+                    @for (var i = 0; i < _model.Cluster.Destinations.Count; i++)
+                    {
+                        var dest = _model.Cluster.Destinations[i];
+                        var index = i;
+                        <MudGrid Spacing="2" Class="mb-2">
+                            <MudItem xs="12" md="3">
+                                <MudTextField @bind-Value="dest.Name"
+                                              Label="Name"
+                                              Required="true"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="12" md="5">
+                                <MudTextField @bind-Value="dest.Address"
+                                              Label="Address"
+                                              Placeholder="https://example.com"
+                                              Required="true"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="10" md="3">
+                                <MudTextField @bind-Value="dest.Host"
+                                              Label="Host header (optional)"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="2" md="1" Class="d-flex align-center">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                               Color="Color.Error"
+                                               OnClick="() => _model.Cluster.Destinations.RemoveAt(index)" />
+                            </MudItem>
+                        </MudGrid>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            @if (!string.IsNullOrEmpty(_error))
             {
-                <p class="muted">Passthrough forwards encrypted bytes to the first destination. The backend must terminate TLS itself. Reachable on the passthrough port (default :5444).</p>
+                <MudItem xs="12">
+                    <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+                        @_error
+                    </MudAlert>
+                </MudItem>
             }
-        </fieldset>
 
-        <fieldset>
-            <legend>Cluster</legend>
-            <label>
-                Load balancing policy (optional)
-                <input class="input" @bind="_model.Cluster.LoadBalancingPolicy" placeholder="RoundRobin" />
-            </label>
-            <h3>Destinations</h3>
-            @for (var i = 0; i < _model.Cluster.Destinations.Count; i++)
+            @if (_view == ViewMode.Simple && _steps.Count > 0)
             {
-                var dest = _model.Cluster.Destinations[i];
-                var index = i;
-                <div class="row">
-                    <label>
-                        Name
-                        <input class="input" @bind="dest.Name" required />
-                    </label>
-                    <label>
-                        Address
-                        <input class="input wide" @bind="dest.Address" placeholder="https://example.com" required />
-                    </label>
-                    <label>
-                        Host header (optional)
-                        <input class="input" @bind="dest.Host" />
-                    </label>
-                    <button type="button" class="btn danger" @onclick="() => _model.Cluster.Destinations.RemoveAt(index)">Remove</button>
-                </div>
+                <MudItem xs="12">
+                    <ProgressLog Steps="_steps" />
+                </MudItem>
             }
-            <button type="button" class="btn" @onclick="AddDestination">+ Add destination</button>
-        </fieldset>
 
-        @if (!string.IsNullOrEmpty(_error))
-        {
-            <div class="error">@_error</div>
-        }
-
-        @if (_view == ViewMode.Simple && _steps.Count > 0)
-        {
-            <ProgressLog Steps="_steps" />
-        }
-
-        <div class="form-actions">
-            <button type="submit" class="btn primary" disabled="@_saving">
-                @if (_saving)
-                {
-                    <span class="spinner" aria-hidden="true"></span>
-                }
-                @(_saving ? "Saving…" : "Save")
-            </button>
-        </div>
-    </EditForm>
+            <MudItem xs="12">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Save"
+                           Disabled="_saving"
+                           OnClick="SaveAsync">
+                    @(_saving ? "Saving…" : "Save")
+                </MudButton>
+            </MudItem>
+        </MudGrid>
     </div>
 }
 
@@ -337,18 +388,18 @@ else
         }
     }
 
-    private void SwitchToAdvanced()
+    private void OnViewChanged(ViewMode next)
     {
-        if (_view == ViewMode.Advanced) return;
-        _jsonBuffer = JsonSerializer.Serialize(_model, JsonOptions);
-        _jsonError = null;
-        _error = null;
-        _view = ViewMode.Advanced;
-    }
-
-    private void SwitchToSimple()
-    {
-        if (_view == ViewMode.Simple) return;
+        if (next == _view) return;
+        if (next == ViewMode.Advanced)
+        {
+            _jsonBuffer = JsonSerializer.Serialize(_model, JsonOptions);
+            _jsonError = null;
+            _error = null;
+            _view = ViewMode.Advanced;
+            return;
+        }
+        // Switching back to Simple: parse the JSON buffer first.
         if (!TryParseJsonBuffer(out var parsed, out var error))
         {
             _jsonError = $"Fix the JSON before switching to Simple: {error}";

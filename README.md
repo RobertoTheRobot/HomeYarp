@@ -591,3 +591,7 @@ dotnet test --solution HomeYarp.WebServer.slnx
 ```
 
 Visual Studio: open `HomeYarp.WebServer.slnx`.
+
+## License
+
+HomeYarp is licensed under the [MIT License](LICENSE). Third-party components and their license texts are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

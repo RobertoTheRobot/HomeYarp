@@ -6,45 +6,69 @@
 
 <PageTitle>Upload certificate · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>Upload certificate</h1>
-    <a class="btn" href="certificates">Back</a>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">Upload certificate</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowBack" Href="certificates">Back</MudButton>
+</MudStack>
 
-<EditForm Model="this" OnValidSubmit="UploadAsync" FormName="cert-upload">
-    <fieldset>
-        <legend>Identity</legend>
-        <label>
-            Name (slug)
-            <input class="input" @bind="_name" required />
-        </label>
-        <label>
-            Friendly name
-            <input class="input" @bind="_friendlyName" />
-        </label>
-    </fieldset>
+<MudGrid Spacing="3">
+    <MudItem xs="12" md="6">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Identity</MudText>
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="_name"
+                              Label="Name (slug)"
+                              Required="true"
+                              RequiredError="Name is required"
+                              Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="_friendlyName"
+                              Label="Friendly name"
+                              Variant="Variant.Outlined" />
+            </MudStack>
+        </MudPaper>
+    </MudItem>
 
-    <fieldset>
-        <legend>PEM material</legend>
-        <label>
-            Certificate (PEM)
-            <textarea class="input" rows="10" @bind="_certPem" placeholder="-----BEGIN CERTIFICATE-----…" required></textarea>
-        </label>
-        <label>
-            Private key (PEM)
-            <textarea class="input" rows="10" @bind="_keyPem" placeholder="-----BEGIN PRIVATE KEY-----…" required></textarea>
-        </label>
-    </fieldset>
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">PEM material</MudText>
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="_certPem"
+                              Label="Certificate (PEM)"
+                              Lines="10"
+                              Required="true"
+                              RequiredError="Certificate PEM is required"
+                              Placeholder="-----BEGIN CERTIFICATE-----…"
+                              Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="_keyPem"
+                              Label="Private key (PEM)"
+                              Lines="10"
+                              Required="true"
+                              RequiredError="Private key PEM is required"
+                              Placeholder="-----BEGIN PRIVATE KEY-----…"
+                              Variant="Variant.Outlined" />
+            </MudStack>
+        </MudPaper>
+    </MudItem>
 
     @if (!string.IsNullOrEmpty(_error))
     {
-        <div class="error">@_error</div>
+        <MudItem xs="12">
+            <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+                @_error
+            </MudAlert>
+        </MudItem>
     }
 
-    <div class="form-actions">
-        <button type="submit" class="btn primary" disabled="@_uploading">@(_uploading ? "Uploading…" : "Upload")</button>
-    </div>
-</EditForm>
+    <MudItem xs="12">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Upload"
+                   Disabled="_uploading"
+                   OnClick="UploadAsync">
+            @(_uploading ? "Uploading…" : "Upload")
+        </MudButton>
+    </MudItem>
+</MudGrid>
 
 @code {
     private string _name = string.Empty;
@@ -57,6 +81,11 @@
     private async Task UploadAsync()
     {
         _error = null;
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_certPem) || string.IsNullOrWhiteSpace(_keyPem))
+        {
+            _error = "Name, certificate PEM, and private key PEM are required.";
+            return;
+        }
         _uploading = true;
         try
         {

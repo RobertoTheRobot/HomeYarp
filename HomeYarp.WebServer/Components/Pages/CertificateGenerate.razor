@@ -7,76 +7,96 @@
 
 <PageTitle>Generate self-signed · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>Generate self-signed certificate</h1>
-    <a class="btn" href="certificates">Back</a>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">Generate self-signed certificate</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowBack" Href="certificates">Back</MudButton>
+</MudStack>
 
-<p class="muted">
+<MudAlert Severity="Severity.Info" Class="mb-3" Icon="@Icons.Material.Filled.Info">
     HomeYarp will generate a private key and self-sign a certificate for the hostnames below.
     Use this for internal-only services that aren't reachable from the public internet — clients
     will need to trust HomeYarp's cert (or be told to ignore the warning) since it isn't issued
     by a public CA.
-</p>
+</MudAlert>
 
-<EditForm Model="this" OnValidSubmit="GenerateAsync" FormName="cert-generate">
-    <fieldset>
-        <legend>Identity</legend>
-        <label>
-            Name (slug)
-            <input class="input" @bind="_name" required placeholder="e.g. homeassistant-internal" />
-        </label>
-        <label>
-            Friendly name
-            <input class="input" @bind="_friendlyName" placeholder="e.g. Home Assistant (internal)" />
-        </label>
-    </fieldset>
+<MudGrid Spacing="3">
+    <MudItem xs="12" md="6">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Identity</MudText>
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="_name"
+                              Label="Name (slug)"
+                              Required="true"
+                              RequiredError="Name is required"
+                              Placeholder="e.g. homeassistant-internal"
+                              Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="_friendlyName"
+                              Label="Friendly name"
+                              Placeholder="e.g. Home Assistant (internal)"
+                              Variant="Variant.Outlined" />
+            </MudStack>
+        </MudPaper>
+    </MudItem>
 
-    <fieldset>
-        <legend>Hostnames</legend>
-        <label>
-            One per line. The first becomes the certificate's Common Name. IP addresses go into
-            the SAN as IP entries; everything else as DNS entries. Wildcards (<code>*.home.lan</code>)
-            are allowed for self-signed certs.
-            <textarea class="input" rows="6" @bind="_hostnames" placeholder="homeassistant.home.lan&#10;192.168.1.50" required></textarea>
-        </label>
-    </fieldset>
+    <MudItem xs="12" md="6">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Key &amp; validity</MudText>
+            <MudStack Spacing="3">
+                <MudSelect T="CertificateKeyType" @bind-Value="_keyType" Label="Key type" Variant="Variant.Outlined">
+                    <MudSelectItem Value="@CertificateKeyType.Ec256">EC P-256 (recommended)</MudSelectItem>
+                    <MudSelectItem Value="@CertificateKeyType.Rsa2048">RSA 2048</MudSelectItem>
+                </MudSelect>
+                <MudNumericField T="int" @bind-Value="_validityDays"
+                                 Label="Validity (days)"
+                                 Min="1" Max="3650"
+                                 Variant="Variant.Outlined" />
+            </MudStack>
+        </MudPaper>
+    </MudItem>
 
-    <fieldset>
-        <legend>Key &amp; validity</legend>
-        <label>
-            Key type
-            <select class="input" @bind="_keyType">
-                <option value="@CertificateKeyType.Ec256">EC P-256 (recommended)</option>
-                <option value="@CertificateKeyType.Rsa2048">RSA 2048</option>
-            </select>
-        </label>
-        <label>
-            Validity (days)
-            <input class="input narrow" type="number" min="1" max="3650" @bind="_validityDays" />
-        </label>
-    </fieldset>
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Hostnames</MudText>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                One per line. The first becomes the certificate's Common Name. IP addresses go into
+                the SAN as IP entries; everything else as DNS entries. Wildcards (<code>*.home.lan</code>)
+                are allowed for self-signed certs.
+            </MudText>
+            <MudTextField @bind-Value="_hostnames"
+                          Lines="6"
+                          Required="true"
+                          RequiredError="At least one hostname is required"
+                          Placeholder="homeassistant.home.lan&#10;192.168.1.50"
+                          Variant="Variant.Outlined" />
+        </MudPaper>
+    </MudItem>
 
     @if (!string.IsNullOrEmpty(_error))
     {
-        <div class="error">@_error</div>
+        <MudItem xs="12">
+            <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+                @_error
+            </MudAlert>
+        </MudItem>
     }
 
     @if (_steps.Count > 0)
     {
-        <ProgressLog Steps="_steps" />
+        <MudItem xs="12">
+            <ProgressLog Steps="_steps" />
+        </MudItem>
     }
 
-    <div class="form-actions">
-        <button type="submit" class="btn primary" disabled="@_busy">
-            @if (_busy)
-            {
-                <span class="spinner" aria-hidden="true"></span>
-            }
+    <MudItem xs="12">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.AutoFixHigh"
+                   Disabled="_busy"
+                   OnClick="GenerateAsync">
             @(_busy ? "Generating…" : "Generate certificate")
-        </button>
-    </div>
-</EditForm>
+        </MudButton>
+    </MudItem>
+</MudGrid>
 
 @code {
     private string _name = string.Empty;
@@ -106,6 +126,11 @@
             .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
 
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
         if (hosts.Count == 0)
         {
             _error = "At least one hostname is required.";

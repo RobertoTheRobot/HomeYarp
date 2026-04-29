@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HomeYarp">
+    <title>HomeYarp</title>
+    <!-- Soft fill of the house body -->
+    <path d="M10 32 L32 10 L54 32 L54 52 L10 52 Z"
+          fill="#776BE7" fill-opacity="0.15" />
+    <!-- House outline -->
+    <path d="M10 32 L32 10 L54 32 L54 52 L10 52 Z"
+          fill="none" stroke="#776BE7" stroke-width="3"
+          stroke-linejoin="round" stroke-linecap="round" />
+    <!-- Inbound trunk -->
+    <path d="M32 19 L32 33" stroke="#776BE7" stroke-width="3" stroke-linecap="round" />
+    <!-- Two diverging branches -->
+    <path d="M32 33 L20 45" stroke="#776BE7" stroke-width="3" stroke-linecap="round" />
+    <path d="M32 33 L44 45" stroke="#776BE7" stroke-width="3" stroke-linecap="round" />
+    <!-- Endpoint dots (one inbound, two destinations) -->
+    <circle cx="32" cy="19" r="3.5" fill="#776BE7" />
+    <circle cx="20" cy="45" r="3.5" fill="#776BE7" />
+    <circle cx="44" cy="45" r="3.5" fill="#776BE7" />
+</svg>

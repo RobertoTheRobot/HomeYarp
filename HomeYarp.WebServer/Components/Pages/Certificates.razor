@@ -8,125 +8,197 @@
 
 <PageTitle>Certificates · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>Certificates</h1>
-    <div>
-        <a class="btn" href="certificates/generate">+ Generate self-signed</a>
-        <a class="btn" href="certificates/request">+ Request via Let's Encrypt</a>
-        <a class="btn primary" href="certificates/upload">+ Upload PEM</a>
-    </div>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">Certificates</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.AutoFixHigh" Href="certificates/generate">
+        Generate self-signed
+    </MudButton>
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.CloudDownload" Href="certificates/request" Class="ml-2">
+        Request via Let's Encrypt
+    </MudButton>
+    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Upload" Href="certificates/upload" Class="ml-2">
+        Upload PEM
+    </MudButton>
+</MudStack>
 
 @if (_error is not null)
 {
-    <p class="error">@_error</p>
+    <MudAlert Severity="Severity.Error" Class="mb-3" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+        @_error
+    </MudAlert>
 }
 
 @if (_certs is null)
 {
-    <p>Loading…</p>
-}
-else if (_certs.Count == 0)
-{
-    <p class="empty">No certificates yet. Upload one or request from Let's Encrypt to enable TLS offload.</p>
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
 }
 else
 {
-    <table class="data">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Subject</th>
-                <th>SANs</th>
-                <th>Source</th>
-                <th>Expires</th>
-                <th class="actions"></th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var cert in _certs)
-            {
-                <tr>
-                    <td>
-                        <strong>@cert.Name</strong>
-                        @if (!string.IsNullOrWhiteSpace(cert.FriendlyName))
+    <MudDataGrid T="HomeYarp.Domain.Certificate"
+                 Items="@_certs"
+                 QuickFilter="@_quickFilter"
+                 Filterable="false"
+                 Hideable="false"
+                 Hover="true"
+                 Dense="true"
+                 Bordered="false"
+                 Elevation="1">
+        <ToolBarContent>
+            <MudTextField @bind-Value="_search"
+                          Placeholder="Search name, subject, or SAN"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          IconSize="Size.Medium"
+                          Immediate="true"
+                          Clearable="true"
+                          Class="mt-0" />
+        </ToolBarContent>
+        <Columns>
+            <PropertyColumn Property="x => x.Name" Title="Name">
+                <CellTemplate>
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.body2"><b>@context.Item.Name</b></MudText>
+                        @if (!string.IsNullOrWhiteSpace(context.Item.FriendlyName))
                         {
-                            <div class="muted">@cert.FriendlyName</div>
+                            <MudText Typo="Typo.caption">@context.Item.FriendlyName</MudText>
                         }
-                    </td>
-                    <td><code>@cert.Subject</code></td>
-                    <td>
-                        @foreach (var san in cert.SubjectAlternativeNames)
+                    </MudStack>
+                </CellTemplate>
+            </PropertyColumn>
+            <PropertyColumn Property="x => x.Subject" Title="Subject" />
+            <TemplateColumn Title="SANs" Sortable="false">
+                <CellTemplate>
+                    <MudStack Spacing="1">
+                        @foreach (var san in context.Item.SubjectAlternativeNames)
                         {
-                            <div><code>@san</code></div>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@san</MudChip>
                         }
-                    </td>
-                    <td>
-                        @if (cert.Acme is not null)
+                    </MudStack>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Source" SortBy="@(new Func<HomeYarp.Domain.Certificate, object>(SourceLabel))">
+                <CellTemplate>
+                    @if (context.Item.Acme is not null)
+                    {
+                        <MudStack Spacing="0">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">ACME</MudChip>
+                            <MudText Typo="Typo.caption">
+                                @if (context.Item.Acme.RenewedAt is { } renewed)
+                                {
+                                    @($"renewed {renewed:yyyy-MM-dd}")
+                                }
+                                else
+                                {
+                                    @($"issued {context.Item.Acme.IssuedAt:yyyy-MM-dd}")
+                                }
+                            </MudText>
+                        </MudStack>
+                    }
+                    else if (context.Item.SelfSigned is not null)
+                    {
+                        <MudStack Spacing="0">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Filled">Self-signed</MudChip>
+                            <MudText Typo="Typo.caption">
+                                @if (context.Item.SelfSigned.RegeneratedAt is { } regen)
+                                {
+                                    @($"regenerated {regen:yyyy-MM-dd}")
+                                }
+                                else
+                                {
+                                    @($"issued {context.Item.SelfSigned.IssuedAt:yyyy-MM-dd}")
+                                }
+                            </MudText>
+                        </MudStack>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">Manual</MudChip>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <PropertyColumn Property="x => x.NotAfter" Title="Expires">
+                <CellTemplate>
+                    @{
+                        var expired = context.Item.NotAfter < DateTimeOffset.UtcNow;
+                    }
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudText Typo="Typo.body2" Color="@(expired ? Color.Error : Color.Default)">
+                            @context.Item.NotAfter.ToString("yyyy-MM-dd")
+                        </MudText>
+                        @if (expired)
                         {
-                            <span class="badge">ACME</span>
-                            @if (cert.Acme.RenewedAt is { } renewed)
-                            {
-                                <div class="muted">renewed @renewed.ToString("yyyy-MM-dd")</div>
-                            }
-                            else
-                            {
-                                <div class="muted">issued @cert.Acme.IssuedAt.ToString("yyyy-MM-dd")</div>
-                            }
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">expired</MudChip>
                         }
-                        else if (cert.SelfSigned is not null)
-                        {
-                            <span class="badge">Self-signed</span>
-                            @if (cert.SelfSigned.RegeneratedAt is { } regen)
-                            {
-                                <div class="muted">regenerated @regen.ToString("yyyy-MM-dd")</div>
-                            }
-                            else
-                            {
-                                <div class="muted">issued @cert.SelfSigned.IssuedAt.ToString("yyyy-MM-dd")</div>
-                            }
-                        }
-                        else
-                        {
-                            <span class="muted">manual</span>
-                        }
-                    </td>
-                    <td>
-                        @cert.NotAfter.ToString("yyyy-MM-dd")
-                        @if (cert.NotAfter < DateTimeOffset.UtcNow)
-                        {
-                            <span class="muted"> (expired)</span>
-                        }
-                    </td>
-                    <td class="actions">
-                        @if (cert.Acme is not null)
-                        {
-                            <button class="btn"
-                                    disabled="@(_busyId == cert.Id)"
-                                    @onclick="() => RenewAsync(cert)">
-                                @(_busyId == cert.Id ? "Renewing…" : "Renew now")
-                            </button>
-                        }
-                        else if (cert.SelfSigned is not null)
-                        {
-                            <button class="btn"
-                                    disabled="@(_busyId == cert.Id)"
-                                    @onclick="() => RegenerateAsync(cert)">
-                                @(_busyId == cert.Id ? "Regenerating…" : "Regenerate")
-                            </button>
-                        }
-                        <button class="btn danger" @onclick="() => DeleteAsync(cert)">Delete</button>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+                    </MudStack>
+                </CellTemplate>
+            </PropertyColumn>
+            <TemplateColumn Title="" Sortable="false" CellStyle="text-align:right;">
+                <CellTemplate>
+                    @if (context.Item.Acme is not null)
+                    {
+                        <MudTooltip Text="Renew now">
+                            <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                           Size="Size.Small"
+                                           Disabled="@(_busyId == context.Item.Id)"
+                                           OnClick="() => RenewAsync(context.Item)" />
+                        </MudTooltip>
+                    }
+                    else if (context.Item.SelfSigned is not null)
+                    {
+                        <MudTooltip Text="Regenerate">
+                            <MudIconButton Icon="@Icons.Material.Filled.Autorenew"
+                                           Size="Size.Small"
+                                           Disabled="@(_busyId == context.Item.Id)"
+                                           OnClick="() => RegenerateAsync(context.Item)" />
+                        </MudTooltip>
+                    }
+                    <MudTooltip Text="Delete">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Color="Color.Error"
+                                       Size="Size.Small"
+                                       OnClick="() => DeleteAsync(context.Item)" />
+                    </MudTooltip>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent>
+            <MudText Class="pa-4" Align="Align.Center">
+                No certificates yet. Upload one or request from Let's Encrypt to enable TLS offload.
+            </MudText>
+        </NoRecordsContent>
+        <PagerContent>
+            <MudDataGridPager T="HomeYarp.Domain.Certificate" />
+        </PagerContent>
+    </MudDataGrid>
 }
 
 @code {
     private IReadOnlyList<HomeYarp.Domain.Certificate>? _certs;
     private string? _error;
     private Guid? _busyId;
+    private string _search = string.Empty;
+
+    private Func<HomeYarp.Domain.Certificate, bool> _quickFilter => cert =>
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        var q = _search.Trim();
+        if (cert.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(cert.FriendlyName) &&
+            cert.FriendlyName.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (cert.Subject.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (cert.SubjectAlternativeNames.Any(s => s.Contains(q, StringComparison.OrdinalIgnoreCase))) return true;
+        if (SourceLabel(cert).Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    };
+
+    private static string SourceLabel(HomeYarp.Domain.Certificate cert) =>
+        cert.Acme is not null ? "ACME"
+        : cert.SelfSigned is not null ? "Self-signed"
+        : "Manual";
 
     protected override async Task OnInitializedAsync() => await Reload();
 

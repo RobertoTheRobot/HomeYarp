@@ -6,63 +6,80 @@
 
 <PageTitle>Request certificate · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>Request certificate from Let's Encrypt</h1>
-    <a class="btn" href="certificates">Back</a>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">Request certificate from Let's Encrypt</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowBack" Href="certificates">Back</MudButton>
+</MudStack>
 
-<p class="muted">
+<MudAlert Severity="Severity.Info" Class="mb-3" Icon="@Icons.Material.Filled.Info">
     HomeYarp will request a fresh certificate from Let's Encrypt over the ACME HTTP-01 challenge.
     Each hostname must publicly resolve to this server, and inbound port 80 must reach the HTTP listener.
-    Configure ACME first under <a href="settings">Settings</a> &mdash;
+    Configure ACME first under <MudLink Href="settings">Settings</MudLink> &mdash;
     <code>HomeYarp:Acme:Enabled</code>, <code>AccountEmail</code>, and
     <code>AgreeToTermsOfService</code> must all be set.
-</p>
+</MudAlert>
 
-<EditForm Model="this" OnValidSubmit="RequestAsync" FormName="cert-request">
-    <fieldset>
-        <legend>Identity</legend>
-        <label>
-            Name (slug)
-            <input class="input" @bind="_name" required placeholder="e.g. cloud-example" />
-        </label>
-        <label>
-            Friendly name
-            <input class="input" @bind="_friendlyName" placeholder="e.g. Cloud (Let's Encrypt)" />
-        </label>
-    </fieldset>
+<MudGrid Spacing="3">
+    <MudItem xs="12" md="6">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Identity</MudText>
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="_name"
+                              Label="Name (slug)"
+                              Required="true"
+                              RequiredError="Name is required"
+                              Placeholder="e.g. cloud-example"
+                              Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="_friendlyName"
+                              Label="Friendly name"
+                              Placeholder="e.g. Cloud (Let's Encrypt)"
+                              Variant="Variant.Outlined" />
+            </MudStack>
+        </MudPaper>
+    </MudItem>
 
-    <fieldset>
-        <legend>Hostnames</legend>
-        <label>
-            One per line. The first hostname becomes the certificate's Common Name.
-            <textarea class="input" rows="6" @bind="_hostnames" placeholder="cloud.example.com&#10;www.cloud.example.com" required></textarea>
-        </label>
-        <p class="muted">
-            Wildcards (<code>*.example.com</code>) are not supported &mdash; HTTP-01 cannot validate them.
-        </p>
-    </fieldset>
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Hostnames</MudText>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                One per line. The first hostname becomes the certificate's Common Name.
+                Wildcards (<code>*.example.com</code>) are not supported &mdash; HTTP-01 cannot validate them.
+            </MudText>
+            <MudTextField @bind-Value="_hostnames"
+                          Lines="6"
+                          Required="true"
+                          RequiredError="At least one hostname is required"
+                          Placeholder="cloud.example.com&#10;www.cloud.example.com"
+                          Variant="Variant.Outlined" />
+        </MudPaper>
+    </MudItem>
 
     @if (!string.IsNullOrEmpty(_error))
     {
-        <div class="error">@_error</div>
+        <MudItem xs="12">
+            <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+                @_error
+            </MudAlert>
+        </MudItem>
     }
 
     @if (_steps.Count > 0)
     {
-        <ProgressLog Steps="_steps" />
+        <MudItem xs="12">
+            <ProgressLog Steps="_steps" />
+        </MudItem>
     }
 
-    <div class="form-actions">
-        <button type="submit" class="btn primary" disabled="@_busy">
-            @if (_busy)
-            {
-                <span class="spinner" aria-hidden="true"></span>
-            }
+    <MudItem xs="12">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.CloudDownload"
+                   Disabled="_busy"
+                   OnClick="RequestAsync">
             @(_busy ? "Requesting…" : "Request certificate")
-        </button>
-    </div>
-</EditForm>
+        </MudButton>
+    </MudItem>
+</MudGrid>
 
 @code {
     private string _name = string.Empty;
@@ -90,6 +107,11 @@
             .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
 
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
         if (hosts.Count == 0)
         {
             _error = "At least one hostname is required.";

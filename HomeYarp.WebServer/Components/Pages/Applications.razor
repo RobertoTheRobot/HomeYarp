@@ -5,72 +5,121 @@
 
 <PageTitle>Applications · HomeYarp</PageTitle>
 
-<div class="page-header">
-    <h1>Applications</h1>
-    <a class="btn primary" href="applications/new">+ New application</a>
-</div>
+<MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+    <MudText Typo="Typo.h4">Applications</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Add" Href="applications/new">
+        New application
+    </MudButton>
+</MudStack>
 
 @if (_apps is null)
 {
-    <p>Loading…</p>
-}
-else if (_apps.Count == 0)
-{
-    <p class="empty">No applications yet. Create one to start proxying traffic.</p>
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
 }
 else
 {
-    <table class="data">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Hosts</th>
-                <th>Destinations</th>
-                <th>Enabled</th>
-                <th class="actions"></th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var app in _apps)
-            {
-                <tr>
-                    <td>
-                        <strong>@app.Name</strong>
-                        @if (!string.IsNullOrWhiteSpace(app.DisplayName))
+    <MudDataGrid T="HomeYarp.Domain.Application"
+                 Items="@_apps"
+                 QuickFilter="@_quickFilter"
+                 Filterable="false"
+                 Hideable="false"
+                 Hover="true"
+                 Dense="true"
+                 Bordered="false"
+                 Elevation="1">
+        <ToolBarContent>
+            <MudTextField @bind-Value="_search"
+                          Placeholder="Search name, host, or destination"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          IconSize="Size.Medium"
+                          Immediate="true"
+                          Clearable="true"
+                          Class="mt-0" />
+        </ToolBarContent>
+        <Columns>
+            <PropertyColumn Property="x => x.Name" Title="Name">
+                <CellTemplate>
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.body2"><b>@context.Item.Name</b></MudText>
+                        @if (!string.IsNullOrWhiteSpace(context.Item.DisplayName))
                         {
-                            <div class="muted">@app.DisplayName</div>
+                            <MudText Typo="Typo.caption">@context.Item.DisplayName</MudText>
                         }
-                    </td>
-                    <td>@string.Join(", ", app.Routes.SelectMany(r => r.Hosts).Distinct())</td>
-                    <td>
-                        @foreach (var d in app.Cluster.Destinations)
+                    </MudStack>
+                </CellTemplate>
+            </PropertyColumn>
+            <TemplateColumn Title="Hosts" SortBy="@(new Func<HomeYarp.Domain.Application, object>(x => HostsOf(x)))">
+                <CellTemplate>@HostsOf(context.Item)</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Destinations" Sortable="false">
+                <CellTemplate>
+                    <MudStack Spacing="1">
+                        @foreach (var d in context.Item.Cluster.Destinations)
                         {
-                            <div><code>@d.Address</code></div>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@d.Address</MudChip>
                         }
-                    </td>
-                    <td>@(app.Enabled ? "yes" : "no")</td>
-                    <td class="actions">
-                        <a class="btn" href="@($"applications/{app.Id}")">Edit</a>
-                        <button class="btn danger" @onclick="() => DeleteAsync(app)">Delete</button>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+                    </MudStack>
+                </CellTemplate>
+            </TemplateColumn>
+            <PropertyColumn Property="x => x.Enabled" Title="Enabled">
+                <CellTemplate>
+                    <MudIcon Icon="@(context.Item.Enabled ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.RadioButtonUnchecked)"
+                             Color="@(context.Item.Enabled ? Color.Success : Color.Default)"
+                             Size="Size.Small" />
+                </CellTemplate>
+            </PropertyColumn>
+            <TemplateColumn Title="" Sortable="false" CellStyle="text-align:right;">
+                <CellTemplate>
+                    <MudTooltip Text="Edit">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                       Size="Size.Small"
+                                       Href="@($"applications/{context.Item.Id}")" />
+                    </MudTooltip>
+                    <MudTooltip Text="Delete">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Color="Color.Error"
+                                       Size="Size.Small"
+                                       OnClick="() => DeleteAsync(context.Item)" />
+                    </MudTooltip>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent>
+            <MudText Class="pa-4" Align="Align.Center">
+                No applications yet. Create one to start proxying traffic.
+            </MudText>
+        </NoRecordsContent>
+        <PagerContent>
+            <MudDataGridPager T="HomeYarp.Domain.Application" />
+        </PagerContent>
+    </MudDataGrid>
 }
 
 @code {
     private IReadOnlyList<HomeYarp.Domain.Application>? _apps;
+    private string _search = string.Empty;
 
-    protected override async Task OnInitializedAsync()
+    private Func<HomeYarp.Domain.Application, bool> _quickFilter => app =>
     {
-        await Reload();
-    }
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        var q = _search.Trim();
+        if (app.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(app.DisplayName) &&
+            app.DisplayName.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (app.Routes.SelectMany(r => r.Hosts).Any(h => h.Contains(q, StringComparison.OrdinalIgnoreCase))) return true;
+        if (app.Cluster.Destinations.Any(d => d.Address.Contains(q, StringComparison.OrdinalIgnoreCase))) return true;
+        return false;
+    };
 
-    private async Task Reload()
-    {
-        _apps = await Service.ListAsync();
-    }
+    private static string HostsOf(HomeYarp.Domain.Application app) =>
+        string.Join(", ", app.Routes.SelectMany(r => r.Hosts).Distinct());
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload() => _apps = await Service.ListAsync();
 
     private async Task DeleteAsync(HomeYarp.Domain.Application app)
     {

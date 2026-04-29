@@ -2,16 +2,55 @@
 
 <PageTitle>HomeYarp</PageTitle>
 
-<h1>HomeYarp</h1>
-<p class="lede">A YARP-based reverse proxy for your home lab.</p>
+<MudText Typo="Typo.h3" GutterBottom="true">HomeYarp</MudText>
+<MudText Typo="Typo.subtitle1" Class="mb-6">A YARP-based reverse proxy for your home lab.</MudText>
 
-<div class="cards">
-    <a class="card" href="applications">
-        <h2>Applications</h2>
-        <p>Manage proxied apps, routes, and destinations.</p>
-    </a>
-    <a class="card" href="settings">
-        <h2>Settings</h2>
-        <p>Inspect storage and runtime configuration.</p>
-    </a>
-</div>
+<MudGrid Spacing="3">
+    <MudItem xs="12" sm="6" md="4">
+        <MudCard Outlined="true" Class="h-100">
+            <MudCardContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Apps" Color="Color.Primary" />
+                    <MudText Typo="Typo.h5">Applications</MudText>
+                </MudStack>
+                <MudText Typo="Typo.body2">Manage proxied apps, routes, and destinations.</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="applications" Variant="Variant.Text" Color="Color.Primary"
+                           EndIcon="@Icons.Material.Filled.ArrowForward">Open</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" sm="6" md="4">
+        <MudCard Outlined="true" Class="h-100">
+            <MudCardContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Lock" Color="Color.Primary" />
+                    <MudText Typo="Typo.h5">Certificates</MudText>
+                </MudStack>
+                <MudText Typo="Typo.body2">Upload, generate, or request TLS certificates for your apps.</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="certificates" Variant="Variant.Text" Color="Color.Primary"
+                           EndIcon="@Icons.Material.Filled.ArrowForward">Open</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" sm="6" md="4">
+        <MudCard Outlined="true" Class="h-100">
+            <MudCardContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Settings" Color="Color.Primary" />
+                    <MudText Typo="Typo.h5">Settings</MudText>
+                </MudStack>
+                <MudText Typo="Typo.body2">Inspect storage and runtime configuration.</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="settings" Variant="Variant.Text" Color="Color.Primary"
+                           EndIcon="@Icons.Material.Filled.ArrowForward">Open</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+</MudGrid>

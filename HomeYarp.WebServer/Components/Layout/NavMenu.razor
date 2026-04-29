@@ -1,13 +1,22 @@
-<nav class="nav">
-    <div class="nav-brand">HomeYarp</div>
-    <ul>
-        <li><NavLink href="/" Match="NavLinkMatch.All">Home</NavLink></li>
-        <li><NavLink href="applications">Applications</NavLink></li>
-        <li><NavLink href="certificates">Certificates</NavLink></li>
-        <li><NavLink href="settings">Settings</NavLink></li>
-    </ul>
+<MudPaper Square="true"
+          Elevation="0"
+          Class="d-flex flex-column"
+          Style="height: 100%; min-height: 100vh; background-color: var(--mud-palette-surface); border-right: 1px solid var(--mud-palette-divider);">
+    <MudStack Row="true" AlignItems="AlignItems.Start" Spacing="2" Class="px-4 pt-4 pb-3">
+        <img src="logo.svg" alt="HomeYarp" width="36" height="36" />
+        <MudText Typo="Typo.h6" Color="Color.Primary">HomeYarp</MudText>
+    </MudStack>
 
-    <div class="nav-reload">
+    <MudNavMenu Class="mt-2">
+        <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Home</MudNavLink>
+        <MudNavLink Href="applications" Icon="@Icons.Material.Filled.Apps">Applications</MudNavLink>
+        <MudNavLink Href="certificates" Icon="@Icons.Material.Filled.Lock">Certificates</MudNavLink>
+        <MudNavLink Href="settings" Icon="@Icons.Material.Filled.Settings">Settings</MudNavLink>
+    </MudNavMenu>
+
+    <MudDivider Class="mt-auto" />
+
+    <div class="pa-3">
         <ReloadRuntimeButton Compact="true" @rendermode="InteractiveServer" />
     </div>
-</nav>
+</MudPaper>

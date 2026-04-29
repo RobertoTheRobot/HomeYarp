@@ -3,6 +3,7 @@ using HomeYarp.Application.Acme;
 using HomeYarp.Persistance;
 using HomeYarp.WebServer;
 using HomeYarp.WebServer.Components;
+using MudBlazor.Services;
 using Serilog;
 using Serilog.Events;
 
@@ -35,6 +36,8 @@ try
     builder.Services
         .AddRazorComponents()
         .AddInteractiveServerComponents();
+
+    builder.Services.AddMudServices();
 
     builder.Services
         .AddHomeYarpPersistance(builder.Configuration)

@@ -9,63 +9,116 @@
 
 <PageTitle>Settings · HomeYarp</PageTitle>
 
-<h1>Settings</h1>
+<MudText Typo="Typo.h4" Class="mb-4">Settings</MudText>
 
-<section>
-    <h2>Storage</h2>
-    <dl class="kv">
-        <dt>Data root</dt>
-        <dd><code>@StorageOptions.Value.DataRoot</code></dd>
-        <dt>Resolved path</dt>
-        <dd><code>@_resolvedPath</code></dd>
-    </dl>
-    <p class="muted">Configured via <code>HomeYarp:Storage:DataRoot</code>. Changes require a restart.</p>
-</section>
+<MudGrid Spacing="3">
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.Storage" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Storage</MudText>
+            </MudStack>
+            <MudSimpleTable Dense="true" Hover="true" Bordered="false" Striped="false" Elevation="0" Class="mb-2">
+                <tbody>
+                    <tr>
+                        <td style="width:200px"><MudText Typo="Typo.body2" Color="Color.Default">Data root</MudText></td>
+                        <td><MudText Typo="Typo.body2" Style="font-family: ui-monospace, Consolas, monospace;">@StorageOptions.Value.DataRoot</MudText></td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Resolved path</MudText></td>
+                        <td><MudText Typo="Typo.body2" Style="font-family: ui-monospace, Consolas, monospace;">@_resolvedPath</MudText></td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+            <MudText Typo="Typo.caption">Configured via <code>HomeYarp:Storage:DataRoot</code>. Changes require a restart.</MudText>
+        </MudPaper>
+    </MudItem>
 
-<section>
-    <h2>Runtime</h2>
-    <dl class="kv">
-        <dt>Applications</dt>
-        <dd>@_appCount total · @_enabledCount enabled</dd>
-        <dt>Destinations</dt>
-        <dd>@_destinationCount across enabled apps</dd>
-    </dl>
-    <p class="muted">
-        Saving an application or certificate writes to disk but does not re-apply to the live proxy.
-        Click below to rebuild the YARP route table and SNI certificate map from the current on-disk state.
-    </p>
-    <ReloadRuntimeButton />
-</section>
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.RocketLaunch" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Runtime</MudText>
+            </MudStack>
+            <MudSimpleTable Dense="true" Hover="true" Bordered="false" Striped="false" Elevation="0" Class="mb-2">
+                <tbody>
+                    <tr>
+                        <td style="width:200px"><MudText Typo="Typo.body2" Color="Color.Default">Applications</MudText></td>
+                        <td><MudText Typo="Typo.body2">@_appCount total · @_enabledCount enabled</MudText></td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Destinations</MudText></td>
+                        <td><MudText Typo="Typo.body2">@_destinationCount across enabled apps</MudText></td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+            <MudText Typo="Typo.caption" Class="mb-3 d-block">
+                Saving an application or certificate writes to disk but does not re-apply to the live proxy.
+                Click below to rebuild the YARP route table and SNI certificate map from the current on-disk state.
+            </MudText>
+            <ReloadRuntimeButton />
+        </MudPaper>
+    </MudItem>
 
-<section>
-    <h2>Let's Encrypt (ACME)</h2>
-    <dl class="kv">
-        <dt>Enabled</dt>
-        <dd>@(_acme.Enabled ? "yes" : "no")</dd>
-        <dt>Account email</dt>
-        <dd>@(string.IsNullOrWhiteSpace(_acme.AccountEmail) ? "(not set)" : _acme.AccountEmail)</dd>
-        <dt>Terms of Service agreed</dt>
-        <dd>@(_acme.AgreeToTermsOfService ? "yes" : "no")</dd>
-        <dt>Directory</dt>
-        <dd>
-            <code>@_acme.DirectoryUrl</code>
-            @if (string.Equals(_acme.DirectoryUrl, AcmeOptions.LetsEncryptStagingDirectory, StringComparison.OrdinalIgnoreCase))
-            {
-                <span class="badge">STAGING</span>
-            }
-        </dd>
-        <dt>Key type</dt>
-        <dd>@_acme.KeyType</dd>
-        <dt>Renew before</dt>
-        <dd>@_acme.RenewBefore</dd>
-        <dt>Renewal interval</dt>
-        <dd>@_acme.RenewalInterval</dd>
-    </dl>
-    <p class="muted">
-        Configured via <code>HomeYarp:Acme</code> in <code>appsettings.json</code>. Changes require a restart.
-        Inbound port 80 must reach this server's HTTP listener for HTTP-01 challenges to succeed.
-    </p>
-</section>
+    <MudItem xs="12">
+        <MudPaper Outlined="true" Class="pa-4">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.Lock" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Let's Encrypt (ACME)</MudText>
+            </MudStack>
+            <MudSimpleTable Dense="true" Hover="true" Bordered="false" Striped="false" Elevation="0" Class="mb-2">
+                <tbody>
+                    <tr>
+                        <td style="width:200px"><MudText Typo="Typo.body2" Color="Color.Default">Enabled</MudText></td>
+                        <td>
+                            <MudIcon Icon="@(_acme.Enabled ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Cancel)"
+                                     Color="@(_acme.Enabled ? Color.Success : Color.Default)" Size="Size.Small" />
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Account email</MudText></td>
+                        <td><MudText Typo="Typo.body2">@(string.IsNullOrWhiteSpace(_acme.AccountEmail) ? "(not set)" : _acme.AccountEmail)</MudText></td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Terms of Service agreed</MudText></td>
+                        <td>
+                            <MudIcon Icon="@(_acme.AgreeToTermsOfService ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Cancel)"
+                                     Color="@(_acme.AgreeToTermsOfService ? Color.Success : Color.Default)" Size="Size.Small" />
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Directory</MudText></td>
+                        <td>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudText Typo="Typo.body2" Style="font-family: ui-monospace, Consolas, monospace;">@_acme.DirectoryUrl</MudText>
+                                @if (string.Equals(_acme.DirectoryUrl, AcmeOptions.LetsEncryptStagingDirectory, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">STAGING</MudChip>
+                                }
+                            </MudStack>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Key type</MudText></td>
+                        <td><MudText Typo="Typo.body2">@_acme.KeyType</MudText></td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Renew before</MudText></td>
+                        <td><MudText Typo="Typo.body2">@_acme.RenewBefore</MudText></td>
+                    </tr>
+                    <tr>
+                        <td><MudText Typo="Typo.body2" Color="Color.Default">Renewal interval</MudText></td>
+                        <td><MudText Typo="Typo.body2">@_acme.RenewalInterval</MudText></td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+            <MudText Typo="Typo.caption">
+                Configured via <code>HomeYarp:Acme</code> in <code>appsettings.json</code>. Changes require a restart.
+                Inbound port 80 must reach this server's HTTP listener for HTTP-01 challenges to succeed.
+            </MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
 
 @code {
     private string _resolvedPath = string.Empty;
