@@ -23,6 +23,12 @@ public sealed class CertificateService : ICertificateService
     public Task<Certificate?> GetAsync(Guid id, CancellationToken cancellationToken = default)
         => _repository.GetByIdAsync(id, cancellationToken);
 
+    public async Task<string?> GetCertificatePemAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var material = await _repository.GetMaterialAsync(id, cancellationToken);
+        return material?.CertificatePem;
+    }
+
     public async Task<Certificate> UploadAsync(string name, string? friendlyName, CertificateMaterial material, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(name))

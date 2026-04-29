@@ -1,0 +1,85 @@
+@* Reusable dialog showing platform-specific instructions for trusting a certificate
+   downloaded from HomeYarp. Most relevant for self-signed certs — the SAN-based
+   examples reference the cert slug and primary hostname so commands are copy-pasteable. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Download the certificate first (it's a public-key-only PEM, no private key).
+            Then install it in the trust store of every client that should connect to
+            <code>@PrimaryHost</code> without a security warning.
+        </MudText>
+
+        <MudExpansionPanels MultiExpansion="false" Outlined="true">
+            <MudExpansionPanel Text="Windows — system trust store">
+                <MudText Typo="Typo.body2" Class="mb-2">
+                    From an <strong>elevated</strong> PowerShell. Trusts the cert system-wide for
+                    Edge, Chrome, the .NET runtime, and any other client that uses the OS store.
+                </MudText>
+                <pre style="background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;">@($"Import-Certificate -FilePath {CertFileName} -CertStoreLocation Cert:\\LocalMachine\\Root")</pre>
+            </MudExpansionPanel>
+
+            <MudExpansionPanel Text="Linux — Debian/Ubuntu system trust store">
+                <MudText Typo="Typo.body2" Class="mb-2">
+                    Place the cert under <code>/usr/local/share/ca-certificates</code> with a
+                    <code>.crt</code> extension and refresh the bundle.
+                </MudText>
+                <pre style="background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;">@($"sudo cp {CertFileName} /usr/local/share/ca-certificates/{CertSlug}.crt\nsudo update-ca-certificates")</pre>
+                <MudText Typo="Typo.caption" Class="mt-2">
+                    On RHEL/Fedora: <code>sudo cp @CertFileName /etc/pki/ca-trust/source/anchors/ &amp;&amp; sudo update-ca-trust</code>.
+                </MudText>
+            </MudExpansionPanel>
+
+            <MudExpansionPanel Text="Docker daemon — Linux server (for docker pull/push)">
+                <MudText Typo="Typo.body2" Class="mb-2">
+                    The Docker daemon does not use the system CA store. It looks under
+                    <code>/etc/docker/certs.d/&lt;host&gt;/ca.crt</code>.
+                </MudText>
+                <pre style="background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;">@($"sudo mkdir -p /etc/docker/certs.d/{PrimaryHost}\nsudo cp {CertFileName} /etc/docker/certs.d/{PrimaryHost}/ca.crt\nsudo systemctl restart docker")</pre>
+            </MudExpansionPanel>
+
+            <MudExpansionPanel Text="Docker Desktop — Windows (for docker pull/push)">
+                <pre style="background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;">@($"New-Item -ItemType Directory -Force \"C:\\ProgramData\\docker\\certs.d\\{PrimaryHost}\"\nCopy-Item {CertFileName} \"C:\\ProgramData\\docker\\certs.d\\{PrimaryHost}\\ca.crt\"")</pre>
+                <MudText Typo="Typo.caption" Class="mt-2">Restart Docker Desktop after copying.</MudText>
+            </MudExpansionPanel>
+
+            <MudExpansionPanel Text="Firefox (does not use the OS trust store)">
+                <MudText Typo="Typo.body2" Class="mb-2">Firefox keeps its own CA list. Import manually:</MudText>
+                <ol style="margin: 0; padding-left: 1.25rem;">
+                    <li>Settings → Privacy &amp; Security → Certificates → <strong>View Certificates</strong></li>
+                    <li><strong>Authorities</strong> tab → <strong>Import</strong></li>
+                    <li>Select <code>@CertFileName</code></li>
+                    <li>Check <strong>"Trust this CA to identify websites"</strong> → OK</li>
+                </ol>
+            </MudExpansionPanel>
+
+            <MudExpansionPanel Text="macOS — system Keychain">
+                <pre style="background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;">@($"sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {CertFileName}")</pre>
+                <MudText Typo="Typo.caption" Class="mt-2">
+                    Or open the file in Finder and use the Keychain Access GUI to set it as
+                    "Always Trust".
+                </MudText>
+            </MudExpansionPanel>
+        </MudExpansionPanels>
+
+        <MudAlert Severity="Severity.Info" Class="mt-3" Dense="true">
+            Self-signed certs only protect against passive eavesdropping in your home lab —
+            anyone who can intercept traffic and present a different cert is still a risk.
+            For internet-exposed services use the External (Let's Encrypt) source instead.
+        </MudAlert>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter, EditorRequired] public string CertSlug { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string PrimaryHost { get; set; } = string.Empty;
+
+    private string CertFileName => $"{CertSlug}.pem";
+
+    private void Close() => MudDialog.Close();
+}

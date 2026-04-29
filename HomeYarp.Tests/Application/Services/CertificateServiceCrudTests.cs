@@ -47,6 +47,29 @@ public class CertificateServiceCrudTests
     }
 
     [Fact]
+    public async Task GetCertificatePemAsync_WhenMaterialExists_ReturnsPublicPem()
+    {
+        var id = Guid.NewGuid();
+        _repo.GetMaterialAsync(id, Arg.Any<CancellationToken>())
+            .Returns(new CertificateMaterial("-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----", "secret-key"));
+
+        var pem = await Service.GetCertificatePemAsync(id);
+
+        pem.ShouldBe("-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----");
+    }
+
+    [Fact]
+    public async Task GetCertificatePemAsync_WhenMaterialMissing_ReturnsNull()
+    {
+        _repo.GetMaterialAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns((CertificateMaterial?)null);
+
+        var pem = await Service.GetCertificatePemAsync(Guid.NewGuid());
+
+        pem.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task DeleteAsync_DelegatesToRepository()
     {
         var id = Guid.NewGuid();

@@ -4,6 +4,7 @@
 @inject ICertificateService Service
 @inject IAcmeService Acme
 @inject ISelfSignedCertificateService SelfSigned
+@inject IDialogService DialogService
 @rendermode InteractiveServer
 
 <PageTitle>Certificates · HomeYarp</PageTitle>
@@ -138,6 +139,19 @@ else
             </PropertyColumn>
             <TemplateColumn Title="" Sortable="false" CellStyle="text-align:right;">
                 <CellTemplate>
+                    <MudTooltip Text="Download public key (.pem)">
+                        <MudIconButton Icon="@Icons.Material.Filled.Download"
+                                       Size="Size.Small"
+                                       Href="@($"api/certificates/{context.Item.Id}/download")" />
+                    </MudTooltip>
+                    @if (context.Item.SelfSigned is not null)
+                    {
+                        <MudTooltip Text="How to trust this cert">
+                            <MudIconButton Icon="@Icons.Material.Filled.HelpOutline"
+                                           Size="Size.Small"
+                                           OnClick="() => ShowTrustInstructionsAsync(context.Item)" />
+                        </MudTooltip>
+                    }
                     @if (context.Item.Acme is not null)
                     {
                         <MudTooltip Text="Renew now">
@@ -250,5 +264,19 @@ else
         {
             _busyId = null;
         }
+    }
+
+    private async Task ShowTrustInstructionsAsync(HomeYarp.Domain.Certificate cert)
+    {
+        var primaryHost = cert.SubjectAlternativeNames.FirstOrDefault()
+            ?? cert.SelfSigned?.Hostnames.FirstOrDefault()
+            ?? cert.Subject;
+        var parameters = new DialogParameters
+        {
+            ["CertSlug"] = cert.Name,
+            ["PrimaryHost"] = primaryHost
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<TrustCertificateDialog>("Trust this certificate", parameters, options);
     }
 }

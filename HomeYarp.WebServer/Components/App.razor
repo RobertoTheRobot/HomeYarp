@@ -13,11 +13,16 @@
 </head>
 <body>
     <Routes @rendermode="InteractiveServer" />
-    <script src="_framework/blazor.web.js"></script>
-    <script>var require = { paths: { vs: '_content/BlazorMonaco/lib/monaco-editor/min/vs' } };</script>
+    @* BlazorMonaco's jsInterop.js sets `var require = { paths: { vs: ... } }` at module
+       top, so Monaco's AMD loader (loader.js) picks up the paths automatically — no
+       inline `var require` block needed. The whole stack MUST run before blazor.web.js,
+       otherwise the circuit prerenders JsonEditor while `window.monaco` is still undefined,
+       BlazorMonaco throws, and the circuit dies on first request (symptoms: inputs don't
+       focus, typing doesn't show, cursor doesn't blink). See BlazorMonaco 3.4.0 README. *@
+    <script src="_content/BlazorMonaco/jsInterop.js"></script>
     <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js"></script>
     <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js"></script>
-    <script src="_content/BlazorMonaco/jsInterop.js"></script>
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+    <script src="_framework/blazor.web.js"></script>
 </body>
 </html>

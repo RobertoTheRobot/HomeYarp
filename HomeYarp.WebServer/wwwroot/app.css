@@ -1,24 +1,9 @@
-:root {
-    --bg: #0f172a;
-    --panel: #1e293b;
-    --border: #334155;
-    --text: #e2e8f0;
-    --muted: #94a3b8;
-    --accent: #38bdf8;
-    --danger: #f87171;
-    --success: #4ade80;
-    --code: #0b1220;
-}
+/* HomeYarp custom CSS. The UI is built with MudBlazor; this file only holds rules
+   that MudBlazor doesn't cover. Avoid bare tag selectors (input, label, fieldset,
+   legend, h1, code, ...) — MudBlazor renders those tags internally and a global
+   rule will leak into its components. */
 
 * { box-sizing: border-box; }
-
-body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-}
 
 .page {
     display: grid;
@@ -26,217 +11,14 @@ body {
     min-height: 100vh;
 }
 
-.nav {
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    padding: 1.5rem 1rem;
-}
-
-.nav-brand {
-    font-weight: 700;
-    font-size: 1.25rem;
-    margin-bottom: 1.5rem;
-    color: var(--accent);
-}
-
-.nav ul { list-style: none; padding: 0; margin: 0; }
-.nav li { margin-bottom: 0.25rem; }
-.nav a {
-    display: block;
-    padding: 0.5rem 0.75rem;
-    color: var(--text);
-    text-decoration: none;
-    border-radius: 6px;
-}
-.nav a:hover { background: rgba(56, 189, 248, 0.1); }
-.nav a.active { background: rgba(56, 189, 248, 0.18); color: var(--accent); }
-
-.nav-reload {
-    margin-top: 1.5rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--border);
-}
-.nav-reload .btn { width: 100%; }
-.reload-runtime { display: flex; flex-direction: column; gap: 0.5rem; }
-.reload-runtime-meta { font-size: 0.8rem; }
-
 main { padding: 2rem 2.5rem; }
 article { max-width: 1100px; }
 
-h1 { margin-top: 0; }
-h2 { margin-top: 2rem; }
-.lede { color: var(--muted); font-size: 1.1rem; }
-
-.page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.5rem;
-}
-
-.btn {
-    display: inline-block;
-    padding: 0.45rem 0.85rem;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--text);
-    text-decoration: none;
-    font-size: 0.9rem;
-    cursor: pointer;
-}
-.btn:hover { border-color: var(--accent); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
-.btn.primary:hover { filter: brightness(1.1); }
-.btn.danger { color: var(--danger); border-color: rgba(248, 113, 113, 0.4); }
-.btn.danger:hover { background: rgba(248, 113, 113, 0.12); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-table.data {
-    width: 100%;
-    border-collapse: collapse;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-}
-table.data th, table.data td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
-table.data thead th { background: rgba(56, 189, 248, 0.07); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
-table.data tr:last-child td { border-bottom: none; }
-table.data .actions { text-align: right; white-space: nowrap; }
-table.data .actions .btn { margin-left: 0.5rem; }
-
-code {
-    background: var(--code);
-    padding: 0.1rem 0.4rem;
-    border-radius: 4px;
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.85rem;
-}
-
-.muted { color: var(--muted); font-size: 0.85rem; }
-
-.badge {
-    display: inline-block;
-    padding: 0.1rem 0.5rem;
-    border-radius: 999px;
-    background: rgba(56, 189, 248, 0.15);
-    border: 1px solid rgba(56, 189, 248, 0.4);
-    color: var(--accent);
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-}
-.empty { color: var(--muted); padding: 2rem; text-align: center; background: var(--panel); border: 1px dashed var(--border); border-radius: 8px; }
-
-fieldset {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.25rem 1.5rem;
-    margin-bottom: 1.5rem;
-    background: var(--panel);
-}
-legend { padding: 0 0.5rem; color: var(--accent); font-weight: 600; }
-
-label {
-    display: block;
-    margin-bottom: 0.85rem;
-    font-size: 0.9rem;
-}
-label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
-
-.input {
-    display: block;
-    width: 100%;
-    margin-top: 0.25rem;
-    padding: 0.5rem 0.7rem;
-    background: var(--code);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 0.95rem;
-    font-family: inherit;
-}
-.input:focus { outline: none; border-color: var(--accent); }
-.input.narrow { max-width: 100px; }
-.input.wide { min-width: 300px; }
-
-.row {
-    display: flex;
-    gap: 1rem;
-    align-items: flex-end;
-    padding: 0.75rem 0;
-    border-bottom: 1px dashed var(--border);
-}
-.row:last-of-type { border-bottom: none; }
-.row label { flex: 1; margin-bottom: 0; }
-
-.form-actions {
-    display: flex;
-    gap: 0.75rem;
-    margin-top: 1rem;
-}
-
-.error {
-    background: rgba(248, 113, 113, 0.15);
-    border: 1px solid rgba(248, 113, 113, 0.4);
-    color: var(--danger);
-    padding: 0.75rem 1rem;
-    border-radius: 6px;
-    margin-bottom: 1rem;
-}
-
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
-.card {
-    display: block;
-    padding: 1.25rem 1.5rem;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    text-decoration: none;
-}
-.card:hover { border-color: var(--accent); }
-.card h2 { margin-top: 0; color: var(--accent); }
-.card p { color: var(--muted); margin-bottom: 0; }
-
-.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.5rem; }
-.kv dt { color: var(--muted); }
-.kv dd { margin: 0; }
-
-.view-toggle {
-    display: inline-flex;
-    margin-bottom: 1rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--panel);
-}
-.view-toggle-btn {
-    background: transparent;
-    color: var(--muted);
-    border: none;
-    padding: 0.5rem 1rem;
-    cursor: pointer;
-    font: inherit;
-    transition: background 0.15s, color 0.15s;
-}
-.view-toggle-btn + .view-toggle-btn { border-left: 1px solid var(--border); }
-.view-toggle-btn:hover { color: var(--text); }
-.view-toggle-btn.active { background: var(--accent); color: var(--bg); }
-
-.advanced-view {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.25rem;
-    margin-bottom: 1rem;
-}
+/* Monaco wrapper for the Advanced JSON editor on /applications/{id}.
+   See tasks/lessons.md "BlazorMonaco + Blazor Server lifecycle" for the
+   absolute-inset-0 sizing rationale. */
 .json-editor-wrap {
     position: relative;
-    border: 1px solid var(--border);
-    border-radius: 6px;
     overflow: hidden;
     margin: 0.5rem 0 1rem;
 }
@@ -245,12 +27,10 @@ label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
     inset: 0;
 }
 
-.view-pane.hidden { display: none; }
-
-/* Live progress log shown during long-running operations (save app, issue cert). */
+/* Live progress log — used by ProgressLog.razor on multi-step save/issue flows. */
 .progress-log {
-    background: var(--code);
-    border: 1px solid var(--border);
+    background: var(--mud-palette-background-gray);
+    border: 1px solid var(--mud-palette-divider);
     border-radius: 6px;
     padding: 0.75rem 1rem;
     margin: 1rem 0;
@@ -262,32 +42,16 @@ label.checkbox { display: flex; align-items: center; gap: 0.5rem; }
 }
 .progress-log-row { display: flex; gap: 0.75rem; }
 .progress-log-row + .progress-log-row { margin-top: 0.15rem; }
-.progress-log-time { color: var(--muted); flex: none; }
-.progress-log-msg { color: var(--text); }
+.progress-log-time { color: var(--mud-palette-text-secondary); flex: none; }
+.progress-log-msg { color: var(--mud-palette-text-primary); }
 .progress-log-row:last-child .progress-log-msg::after {
     content: " ▍";
-    color: var(--accent);
+    color: var(--mud-palette-primary);
     animation: progress-cursor 1s steps(2) infinite;
 }
 @keyframes progress-cursor { 50% { opacity: 0; } }
 
-/* Inline button spinner used while a save/issue is running. */
-.spinner {
-    display: inline-block;
-    width: 0.85em;
-    height: 0.85em;
-    margin-right: 0.4em;
-    vertical-align: -0.15em;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    animation: spinner-rotate 0.7s linear infinite;
-}
-@keyframes spinner-rotate { to { transform: rotate(360deg); } }
-
 @media (max-width: 720px) {
     .page { grid-template-columns: 1fr; }
-    .nav { border-right: none; border-bottom: 1px solid var(--border); }
     main { padding: 1.25rem; }
-    .row { flex-direction: column; align-items: stretch; }
 }

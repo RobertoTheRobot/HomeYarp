@@ -1,3 +1,4 @@
+using System.Text;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Application.Acme;
 using HomeYarp.Application.SelfSigned;
@@ -47,6 +48,25 @@ public sealed class CertificatesController : ControllerBase
             return NotFound();
         }
         return Ok(CertificateDtoMapper.ToResponse(cert));
+    }
+
+    [HttpGet("{id:guid}/download")]
+    public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
+    {
+        var cert = await _service.GetAsync(id, cancellationToken);
+        if (cert is null)
+        {
+            _logger.LogDebug("API download certificate {CertId} → 404", id);
+            return NotFound();
+        }
+        var pem = await _service.GetCertificatePemAsync(id, cancellationToken);
+        if (pem is null)
+        {
+            _logger.LogWarning("API download certificate {CertId}: metadata exists but PEM material missing", id);
+            return NotFound();
+        }
+        var bytes = Encoding.UTF8.GetBytes(pem);
+        return File(bytes, "application/x-pem-file", $"{cert.Name}.pem");
     }
 
     [HttpPost]

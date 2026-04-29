@@ -1,5 +1,7 @@
 @page "/applications"
 @inject IApplicationService Service
+@inject ICertificateService CertificateService
+@inject IDialogService DialogService
 @inject NavigationManager Nav
 @rendermode InteractiveServer
 
@@ -73,6 +75,25 @@ else
             </PropertyColumn>
             <TemplateColumn Title="" Sortable="false" CellStyle="text-align:right;">
                 <CellTemplate>
+                    @{
+                        var linkedCert = LinkedCert(context.Item);
+                    }
+                    @if (linkedCert is not null)
+                    {
+                        <MudTooltip Text="Download certificate (.pem)">
+                            <MudIconButton Icon="@Icons.Material.Filled.Download"
+                                           Size="Size.Small"
+                                           Href="@($"api/certificates/{linkedCert.Id}/download")" />
+                        </MudTooltip>
+                        @if (linkedCert.SelfSigned is not null)
+                        {
+                            <MudTooltip Text="How to trust this cert">
+                                <MudIconButton Icon="@Icons.Material.Filled.HelpOutline"
+                                               Size="Size.Small"
+                                               OnClick="() => ShowTrustInstructionsAsync(linkedCert)" />
+                            </MudTooltip>
+                        }
+                    }
                     <MudTooltip Text="Edit">
                         <MudIconButton Icon="@Icons.Material.Filled.Edit"
                                        Size="Size.Small"
@@ -100,6 +121,7 @@ else
 
 @code {
     private IReadOnlyList<HomeYarp.Domain.Application>? _apps;
+    private Dictionary<Guid, HomeYarp.Domain.Certificate> _certsById = new();
     private string _search = string.Empty;
 
     private Func<HomeYarp.Domain.Application, bool> _quickFilter => app =>
@@ -119,11 +141,36 @@ else
 
     protected override async Task OnInitializedAsync() => await Reload();
 
-    private async Task Reload() => _apps = await Service.ListAsync();
+    private async Task Reload()
+    {
+        _apps = await Service.ListAsync();
+        var certs = await CertificateService.ListAsync();
+        _certsById = certs.ToDictionary(c => c.Id);
+    }
+
+    private HomeYarp.Domain.Certificate? LinkedCert(HomeYarp.Domain.Application app)
+    {
+        if (app.Tls.CertificateId is not { } id) return null;
+        return _certsById.TryGetValue(id, out var cert) ? cert : null;
+    }
 
     private async Task DeleteAsync(HomeYarp.Domain.Application app)
     {
         await Service.DeleteAsync(app.Id);
         await Reload();
+    }
+
+    private async Task ShowTrustInstructionsAsync(HomeYarp.Domain.Certificate cert)
+    {
+        var primaryHost = cert.SubjectAlternativeNames.FirstOrDefault()
+            ?? cert.SelfSigned?.Hostnames.FirstOrDefault()
+            ?? cert.Subject;
+        var parameters = new DialogParameters
+        {
+            ["CertSlug"] = cert.Name,
+            ["PrimaryHost"] = primaryHost
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<TrustCertificateDialog>("Trust this certificate", parameters, options);
     }
 }

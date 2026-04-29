@@ -41,9 +41,9 @@ OpenAPI docs are exposed at `http://localhost:5268/openapi/v1.json` in Developme
 ## Web UI
 
 - `/` — landing page
-- `/applications` — list, create, edit, delete proxied apps
+- `/applications` — list, create, edit, delete proxied apps. Each row that points at a TLS cert exposes a **Download** button (downloads the public PEM, no private key) and — for self-signed certs — a **trust-instructions** dialog with copy-paste snippets for the Windows / Linux / macOS trust stores, Docker daemon, Docker Desktop, and Firefox.
 - `/applications/new` and `/applications/{id}` — **Simple** form for the everyday fields (identity, routes, TLS, cluster) plus an **Advanced (JSON)** toggle that opens a VS-Code-style editor for the full domain JSON, including YARP transforms, health checks, and HTTP request options
-- `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration
+- `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration. Each row has the same **Download** + **trust-instructions** affordances as the applications page.
 - `/certificates/upload` — paste a PEM cert + key
 - `/certificates/generate` — generate a self-signed certificate
 - `/certificates/request` — request a fresh certificate from Let's Encrypt
@@ -240,6 +240,18 @@ To regenerate in place on demand (same id, fresh key, fresh expiry):
 - API: `POST /api/certificates/{id}/regenerate`.
 
 > **Heads up:** clients need to trust the cert (import into the OS/browser trust store, or accept the warning). Self-signed is fine for internal use; it's not a substitute for a publicly-rooted CA.
+
+### Trusting the cert on a client
+
+The certificate page (`/certificates`) and the applications page (`/applications`) each expose a download icon on every row tied to a self-signed cert and a "How to trust this cert" icon next to it. The download serves the public PEM only (no private key) at `GET /api/certificates/{id}/download`; the trust dialog has copy-paste snippets for:
+
+- Windows system store (`Import-Certificate ... -CertStoreLocation Cert:\LocalMachine\Root` from elevated PowerShell)
+- Debian/Ubuntu (`/usr/local/share/ca-certificates/*.crt` + `update-ca-certificates`) and RHEL/Fedora (`/etc/pki/ca-trust/source/anchors/` + `update-ca-trust`)
+- macOS Keychain (`security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain`)
+- Docker daemon (`/etc/docker/certs.d/<host>/ca.crt`) and Docker Desktop on Windows
+- Firefox (which keeps its own CA list — manual import via Settings → Privacy & Security → Certificates)
+
+ACME-issued and manually-uploaded certs don't need a trust step (their CA is already in the OS store), so the trust dialog only appears for the self-signed source.
 
 ## Let's Encrypt automation
 
