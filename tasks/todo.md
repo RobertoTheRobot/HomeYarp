@@ -1,104 +1,342 @@
-# Serilog logging + extensive structured logs
+# Performance pass — snapshot repos + passthrough route table (and what to do after)
 
-## Goal
+## Scope of this plan
 
-Replace the default `Microsoft.Extensions.Logging` console-only setup with **Serilog** (using the standard `ILogger<T>` API so call sites don't change). Add **extensive structured logging** across all four production projects, with app **id + name** on every routing-related event. Default config writes to **Console only**. Add optional sinks that activate **only if explicitly configured** in `appsettings.json` — File, Seq, and Grafana Loki (the three most common in home-lab stacks). Update README and CLAUDE.md.
+Two intertwined refactors that we'll ship together as **Phase 1**:
 
-## Approach
+1. **Snapshot-backed repositories** (`JsonApplicationRepository`, `JsonCertificateRepository`) — replace per-read `_gate.WaitAsync` + `_cache.Values.ToList()` with an atomically-swapped immutable snapshot (`AllItems` + `ById` + `ByName`). Add a sync `GetSnapshot()` accessor on the interfaces so change-token consumers stop using `.GetAwaiter().GetResult()`.
+2. **Passthrough route table** — new singleton in `HomeYarp.Application/Tls/` that subscribes to the app repo's reload token and exposes O(1) host→`Application` lookup. `TlsPassthroughConnectionHandler` consumes it instead of doing a per-connection `GetAllAsync` + nested LINQ scan.
 
-1. **Serilog wiring** (WebServer):
-   - Add `Serilog.AspNetCore`, `Serilog.Settings.Configuration`, `Serilog.Sinks.Console`, `Serilog.Sinks.File`, `Serilog.Sinks.Seq`.
-   - `Program.cs`: two-stage bootstrap — `Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger()` before `WebApplication.CreateBuilder`, then `builder.Host.UseSerilog((ctx, services, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration).ReadFrom.Services(services).Enrich.FromLogContext())`. Wrap `app.Run()` in try/catch/finally `Log.CloseAndFlush()`.
-   - Use `app.UseSerilogRequestLogging()` so every HTTP request gets a one-line summary (method, path, status, elapsed).
-   - Keep the default `Microsoft.Extensions.Logging` plumbing — Serilog plugs in *under* `ILogger<T>`. **Zero changes to existing logging call sites.**
+Plus a roadmap for **Phases 2–5**, in the best order, summarised at the bottom.
 
-2. **Default config** (`appsettings.json`):
-   - Replace the existing `Logging` section with a `Serilog` section. Console is in the `WriteTo` array by default. Uses `Serilog.Sinks.Console` with `Theme: Code`. Min level Information, Microsoft.AspNetCore Warning.
-   - `appsettings.Development.json` overrides Min level → Debug for HomeYarp and Information for Microsoft.
-   - `Serilog.Settings.Configuration` only activates sinks listed in `WriteTo`. File/Seq/Loki packages are referenced but **silent unless the user adds them** to `WriteTo`. README documents the exact JSON snippets.
+## Phase 1 — detailed plan
 
-3. **Extensive logging** — add `ILogger<T>` to services that don't have it yet, then:
-   - **HomeYarpConfigProvider** (`HomeYarp.Application/Proxy/`) — log every rebuild: app count, route count, cluster count, plus per-app `{AppId} {AppName} {RouteCount} {ClusterId}`. Log skipped apps (`disabled`, `no destinations`).
-   - **SniCertificateSelector** — log reload (`{HostCount} hosts`), per-app SNI binding `{AppId} {AppName} {Host} → {CertId} {CertSubject}`, cert load failures with the app context, and a Debug per `Select(sni)` hit/miss with `{Sni} {AppId?} {CertId?}`.
-   - **TlsPassthroughConnectionHandler** — already logs; expand to include `{AppId} {AppName}` on the resolved-app and pump-end events. Add Debug bytes-pumped totals (cheap counters at end of pump).
-   - **ApplicationService** — log create/update/delete with `{AppId} {AppName}`, validation failures (Warning), auto-managed cert decisions (provision new / regenerate / reuse / delete on source switch / delete on app delete) — each with `{AppId} {AppName} {Source} {CertId}`.
-   - **CertificateService** — log upload / delete with `{CertId} {CertName} {Subject} {NotAfter}` and PEM-parse failures (Warning).
-   - **SelfSignedCertificateService** — log issue / regenerate (`{CertId} {CertName} {Hostnames} {KeyType} {ValidityDays} {NotAfter}`).
-   - **AcmeService** — already logs the high-level flow; add: account-load (cached vs fresh), per-authorization challenge published (`{Token}`), challenge poll loop transitions, order resource transitions, full operation timing (Stopwatch).
-   - **AcmeRenewalService** — already logs; add per-tick start/end and per-cert timing.
-   - **JsonApplicationRepository** / **JsonCertificateRepository** — log Add/Update/Delete (`{Id} {Name}`), startup load summary (`{Count} apps loaded from {Directory}`), malformed-file warnings (was a `// Skip malformed files` comment — promote to Warning with file path + exception). Repo emits Debug on `SignalReload()` so the cascade is visible.
-   - **FileAcmeAccountStore** — log account save/load with directory URL hash.
-   - **HomeYarpKestrelConfiguration** — log effective listener config at startup (`Http: 5268, HttpsOffload: 5443, HttpsPassthrough: 5444`), warn if all are disabled.
-   - **Controllers** — log each entry point with the request id + payload identity (name on POST, id on PUT/DELETE/GET-by-id). Failures already surface via the exceptions; no need to double-log.
-   - **InMemoryAcmeChallengeStore** — Debug on Publish/Remove with token (HTTP-01 challenges are short-lived so it's safe to log token).
+### Why these two together
 
-4. **App-context enrichment**:
-   - For **routing rebuilds**, use `_logger.BeginScope` with `{ AppId, AppName }` so all logs *inside* the per-app loop in `HomeYarpConfigProvider.BuildConfig` automatically carry both. Same in `SniCertificateSelector.Reload`.
-   - For **TLS passthrough** and **app-service flows**, pass `{AppId}` + `{AppName}` directly in the message template (already structured).
-   - Avoid hot-path string concat — Serilog handles deferred formatting.
+They share a common shape: the repos already cache in memory but every read pretends they don't, and the passthrough handler is the worst offender — `GetAllAsync().ToList()` + triple-nested `Any` per inbound TCP connection (`TlsPassthroughConnectionHandler.cs:142-149`). Once the repos expose a sync snapshot, the passthrough route table is the natural consumer that proves the new contract works under load.
 
-5. **Testing**:
-   - The logging itself doesn't get unit tests (logs are observability, not behavior). 
-   - Existing tests must still pass — verify nothing was broken by adding `ILogger<T>` constructor parameters. Where a service that didn't take a logger now does, the existing test's `new Service(...)` call needs `NullLogger<T>.Instance` (or use the existing `ILogger<T>?` nullable pattern that some services already use, e.g. `AcmeService`).
-   - Run: `dotnet test --solution HomeYarp.WebServer.slnx`.
+### Approach
 
-6. **Docs**:
-   - `README.md`: new "Logging" section describing default behavior, structured event shape (mention `{AppId}` / `{AppName}` on routing logs), and **the four sinks with copy-paste-ready JSON snippets** for each. Add a "viewing logs" subsection with quick wins (Seq locally on Docker, file rotation, Loki via Grafana).
-   - `CLAUDE.md`: short "Logging" section under Architecture explaining the bootstrap + ReadFrom.Configuration approach, the sinks list, and the convention that **routing logs carry `{AppId}` and `{AppName}`**.
+**1. New types in `HomeYarp.Application/Abstractions/`:**
+
+```csharp
+public sealed class ApplicationSnapshot
+{
+    public ImmutableArray<Domain.Application> All { get; init; }
+    public ImmutableDictionary<Guid, Domain.Application> ById { get; init; }
+    public ImmutableDictionary<string, Domain.Application> ByName { get; init; }   // OrdinalIgnoreCase
+    public static ApplicationSnapshot Empty { get; } = ...;
+}
+
+public sealed class CertificateSnapshot
+{
+    public ImmutableArray<Certificate> All { get; init; }
+    public ImmutableDictionary<Guid, Certificate> ById { get; init; }
+    public ImmutableDictionary<string, Certificate> ByName { get; init; }   // OrdinalIgnoreCase
+    public static CertificateSnapshot Empty { get; } = ...;
+}
+```
+
+**2. Extend the repo interfaces with a sync accessor:**
+
+```csharp
+public interface IApplicationRepository
+{
+    ApplicationSnapshot GetSnapshot();   // NEW — sync, lock-free, returns the current immutable snapshot
+    // ...existing async methods unchanged
+}
+public interface ICertificateRepository
+{
+    CertificateSnapshot GetSnapshot();   // NEW
+    // ...
+}
+```
+
+**3. Repo implementation changes (`JsonApplicationRepository`, `JsonCertificateRepository`):**
+
+- Drop the lazy-load (`EnsureLoadedAsync`). Load synchronously in the constructor — it's bootstrap, file I/O is fine sync, JSON deserialize is cheap at homelab N. Result populates `_snapshot` before the first read can happen.
+- Replace `Dictionary<Guid, T> _cache` + `bool _loaded` with `private volatile ApplicationSnapshot _snapshot = ApplicationSnapshot.Empty;` (and equivalent for cert repo).
+- Keep `SemaphoreSlim _gate` — but **only writers acquire it**. Readers never touch it.
+- `GetSnapshot()` → `return _snapshot;` (one volatile read).
+- Existing async read methods become trivial wrappers: `Task.FromResult<IReadOnlyList<T>>(_snapshot.All)` etc. (or `ValueTask` if we want to be tidy, but `Task` keeps the interface change zero — preferred).
+- Writers (`AddAsync`/`UpdateAsync`/`DeleteAsync`/`SaveAsync`) acquire `_gate`, do the file I/O, build the new snapshot from the previous one + the mutation, then `_snapshot = newSnapshot` (atomic reference swap on the volatile field).
+- Snapshot rebuild on write: `_snapshot.All.Add/Remove/Replace` + `ById.SetItem/Remove` + `ByName.SetItem/Remove`. All O(log N) on `ImmutableDictionary`, fine at this scale.
+
+**4. New singleton `PassthroughRouteTable` in `HomeYarp.Application/Tls/`:**
+
+```csharp
+public sealed class PassthroughRouteTable : IDisposable
+{
+    private readonly IApplicationRepository _apps;
+    private readonly ILogger<PassthroughRouteTable>? _logger;
+    private readonly object _writerLock = new();
+    private volatile RouteTable _table = RouteTable.Empty;
+    private IDisposable? _subscription;
+
+    public PassthroughRouteTable(IApplicationRepository apps, ILogger<PassthroughRouteTable>? logger = null)
+    {
+        _apps = apps; _logger = logger ?? NullLogger<PassthroughRouteTable>.Instance;
+        Rebuild();
+        _subscription = ChangeToken.OnChange(apps.GetReloadToken, Rebuild);
+    }
+
+    public bool TryResolve(string sni, out Domain.Application app) { /* exact then wildcard */ }
+
+    private void Rebuild()
+    {
+        var snapshot = _apps.GetSnapshot();   // sync now — no .GetAwaiter().GetResult()
+        var byHost = ImmutableDictionary.CreateBuilder<string, Domain.Application>(StringComparer.OrdinalIgnoreCase);
+        var wildcards = ImmutableArray.CreateBuilder<(string suffix, Domain.Application app)>();
+        foreach (var a in snapshot.All)
+        {
+            if (!a.Enabled || a.Tls.Mode != TlsMode.Passthrough) continue;
+            foreach (var r in a.Routes)
+                foreach (var h in r.Hosts)
+                    if (h.StartsWith("*.", StringComparison.Ordinal)) wildcards.Add((h[1..], a));
+                    else byHost[h] = a;
+        }
+        _table = new RouteTable(byHost.ToImmutable(), wildcards.ToImmutable());
+        _logger.LogInformation("Passthrough route table rebuilt: {ExactCount} exact, {WildcardCount} wildcard", byHost.Count, wildcards.Count);
+    }
+
+    public void Dispose() => _subscription?.Dispose();
+
+    private sealed record RouteTable(ImmutableDictionary<string, Domain.Application> Exact, ImmutableArray<(string Suffix, Domain.Application App)> Wildcards) { public static RouteTable Empty { get; } = ...; }
+}
+```
+
+`TryResolve` looks up `Exact` first, then linear-scans `Wildcards` (small list — wildcards are rare). Same matching semantics as the current `HostMatches`.
+
+**5. `TlsPassthroughConnectionHandler` consumes the table:**
+
+```csharp
+public TlsPassthroughConnectionHandler(PassthroughRouteTable routes, ILogger<...> logger)
+```
+
+`ResolveAppAsync` becomes `_routes.TryResolve(sni, out app)` — sync, no await. `OnConnectedAsync` keeps its async/Task signature for the SNI-peek + pump.
+
+**6. Hot consumers switch off `.GetAwaiter().GetResult()`:**
+
+- `HomeYarpConfigProvider.BuildConfig`: `_repository.GetSnapshot().All` instead of `_repository.GetAllAsync().GetAwaiter().GetResult()`.
+- `SniCertificateSelector.ReloadCore`: `_applications.GetSnapshot().All` and `_certificates.GetSnapshot().All` instead of two `.GetAwaiter().GetResult()`s.
+- `SniCertificateSelector.ReloadCore` cert PEM read on line 125: leave as `.GetAwaiter().GetResult()` for now — that's `GetMaterialAsync` which does real file I/O. Phase 3 (cert caching) addresses this.
+
+**7. DI registration (`HomeYarp.Application/DependencyInjection.cs`):**
+
+- Add `services.AddSingleton<PassthroughRouteTable>();` next to the existing `SniCertificateSelector` registration.
+
+### Files touched
+
+- `HomeYarp.Application/Abstractions/IApplicationRepository.cs` — add `GetSnapshot()`.
+- `HomeYarp.Application/Abstractions/ICertificateRepository.cs` — add `GetSnapshot()`.
+- `HomeYarp.Application/Abstractions/ApplicationSnapshot.cs` — NEW.
+- `HomeYarp.Application/Abstractions/CertificateSnapshot.cs` — NEW.
+- `HomeYarp.Application/Tls/PassthroughRouteTable.cs` — NEW.
+- `HomeYarp.Application/Tls/TlsPassthroughConnectionHandler.cs` — depend on `PassthroughRouteTable`; delete `ResolveAppAsync` + `HostMatches`.
+- `HomeYarp.Application/Proxy/HomeYarpConfigProvider.cs` — sync snapshot read in `BuildConfig`.
+- `HomeYarp.Application/Tls/SniCertificateSelector.cs` — sync snapshot reads at the top of `ReloadCore` (cert PEM load deferred to Phase 3).
+- `HomeYarp.Application/DependencyInjection.cs` — register `PassthroughRouteTable`.
+- `HomeYarp.Persistance/Json/JsonApplicationRepository.cs` — snapshot-backed; sync constructor load; writers rebuild snapshot.
+- `HomeYarp.Persistance/Json/JsonCertificateRepository.cs` — same pattern.
+
+### Tests (per the "tests-with-features" rule)
+
+- `HomeYarp.Tests/Persistance/Json/JsonApplicationRepositoryTests.cs` — extend:
+  - `Constructor_LoadsExistingFiles_PopulatesSnapshot`
+  - `GetSnapshot_AfterAdd_ContainsNewItem`
+  - `GetSnapshot_AfterDelete_OmitsItem`
+  - `GetSnapshot_ReturnsSameInstanceUntilNextWrite` (reference equality)
+  - `GetSnapshot_ConcurrentReadsDoNotBlockEachOther` (smoke — N readers in `Parallel.For` while a writer mutates; readers always observe a *consistent* snapshot, never a half-built one).
+- `HomeYarp.Tests/Persistance/Json/JsonCertificateRepositoryTests.cs` — same set, adapted.
+- `HomeYarp.Tests/Application/Tls/PassthroughRouteTableTests.cs` — NEW:
+  - `TryResolve_ExactHost_ReturnsApp`
+  - `TryResolve_WildcardHost_MatchesSubdomain`
+  - `TryResolve_DisabledApp_NotResolved`
+  - `TryResolve_NonPassthroughApp_NotResolved`
+  - `Rebuild_AfterRepoSignalReload_PicksUpNewApp`
+  - `Rebuild_AfterRepoSignalReload_DropsRemovedApp`
+- Existing `TlsPassthroughConnectionHandler` tests (if any) updated to inject the table.
+- Existing `HomeYarpConfigProvider` / `SniCertificateSelector` tests should still pass — interface contract preserved.
+
+### Verification
+
+1. `dotnet build HomeYarp.WebServer.slnx` clean.
+2. `dotnet test --solution HomeYarp.WebServer.slnx` — all tests pass (177 baseline).
+3. `dotnet run` smoke: create a passthrough app via UI, hit it via `curl --resolve foo:5444:127.0.0.1 https://foo/` (or whatever the existing smoke recipe is) — passthrough still works end-to-end.
+4. Spot-check logs: `Passthrough route table rebuilt: ...` appears at startup and on every UI reload.
+
+### Risks
+
+- **Constructor file I/O at startup** — `JsonApplicationRepository` and `JsonCertificateRepository` ctors will read every JSON file synchronously before DI returns. At homelab N (≤ a few hundred files) this is sub-100ms; not a concern. If it ever became one, an `IHostedService` startup hook is the migration path.
+- **`ImmutableDictionary` rebuild cost on writes** — O(N log N) for a full rebuild per mutation. At homelab N, irrelevant. The win on reads (zero allocations, lock-free) dwarfs it.
+- **Existing `EnsureLoadedAsync` removal** — any test that constructs a repo and expects lazy loading will need adjustment. Constructor load is the new contract.
+- **Volatile semantics** — `_snapshot = newSnapshot` on a `volatile` reference is atomic on .NET; readers either see the old or the new, never a torn write. The snapshot itself is immutable so partial observation isn't possible.
 
 ## Plan (checklist)
 
-- [ ] **WebServer csproj** — add Serilog packages.
-- [ ] **`Program.cs`** — two-stage bootstrap, `UseSerilog`, `UseSerilogRequestLogging`, try/finally with `CloseAndFlush`.
-- [ ] **`appsettings.json` / `appsettings.Development.json`** — replace `Logging` with `Serilog` section (Console only by default).
-- [ ] **HomeYarpKestrelConfiguration** — log effective listener config; refactor to take `ILogger`.
-- [ ] **HomeYarpConfigProvider** — `ILogger<HomeYarpConfigProvider>` ctor, log rebuilds with per-app scope `{AppId}` `{AppName}`.
-- [ ] **SniCertificateSelector** — expand existing logging to log reload summary and per-host binding with `{AppId}` `{AppName}` `{CertId}`.
-- [ ] **TlsPassthroughConnectionHandler** — include `{AppId}` `{AppName}` on resolve + termination logs; Debug bytes pumped.
-- [ ] **ApplicationService** — `ILogger<ApplicationService>` ctor, log all CRUD + auto-cert-lifecycle decisions.
-- [ ] **CertificateService** — `ILogger<CertificateService>` ctor, log upload/delete + parse failures.
-- [ ] **SelfSignedCertificateService** — `ILogger<SelfSignedCertificateService>` ctor, log issue/regenerate.
-- [ ] **AcmeService** — expand existing logger usage, add timing, account-load, challenge-poll Debug.
-- [ ] **AcmeRenewalService** — expand existing logger usage, per-tick timing.
-- [ ] **JsonApplicationRepository** — `ILogger<JsonApplicationRepository>` ctor, startup load summary + per-mutation logs + malformed-file Warning.
-- [ ] **JsonCertificateRepository** — same as above.
-- [ ] **FileAcmeAccountStore** — `ILogger<FileAcmeAccountStore>` ctor, save/load logs.
-- [ ] **InMemoryAcmeChallengeStore** — `ILogger<InMemoryAcmeChallengeStore>` ctor, publish/remove Debug.
-- [ ] **Controllers** — `ILogger<T>` for both controllers, log each entry point.
-- [ ] **Tests fix-up** — NullLogger where needed (or rely on nullable param pattern already used by some services).
-- [ ] **Verify** — `dotnet build` + `dotnet test` clean, `dotnet run` and observe logs for create-app + cert-issue paths.
-- [ ] **README.md** — new "Logging" section with sink snippets.
-- [ ] **CLAUDE.md** — short Logging section + the `{AppId}` / `{AppName}` convention.
+- [ ] **Add `ApplicationSnapshot` + `CertificateSnapshot` records** in `HomeYarp.Application/Abstractions/`.
+- [ ] **Extend `IApplicationRepository` + `ICertificateRepository`** with `GetSnapshot()`.
+- [ ] **Refactor `JsonApplicationRepository`** — snapshot-backed, sync ctor load, writers rebuild + atomic swap.
+- [ ] **Refactor `JsonCertificateRepository`** — same pattern.
+- [ ] **Add `PassthroughRouteTable`** singleton in `HomeYarp.Application/Tls/`.
+- [ ] **Refactor `TlsPassthroughConnectionHandler`** to depend on `PassthroughRouteTable`; delete `ResolveAppAsync` + `HostMatches`.
+- [ ] **Update `HomeYarpConfigProvider.BuildConfig`** — drop `.GetAwaiter().GetResult()`, use `GetSnapshot()`.
+- [ ] **Update `SniCertificateSelector.ReloadCore`** — drop the two `.GetAwaiter().GetResult()`s on the snapshot reads (cert PEM read stays for Phase 3).
+- [ ] **Register `PassthroughRouteTable`** in `HomeYarp.Application/DependencyInjection.cs`.
+- [ ] **Tests** — add the test classes listed above; update existing tests that used lazy-load behavior.
+- [ ] **Verify** — `dotnet build` + `dotnet test` clean; live `dotnet run` smoke for passthrough + offload paths.
+- [ ] **CLAUDE.md** — add a one-paragraph note in the "Change-token reload chain" section about the snapshot pattern + the new `PassthroughRouteTable`. Update the per-connection comment for `TlsPassthroughConnectionHandler`.
 
-## Out of scope
+## Out of scope for Phase 1
 
-- Replacing `ILogger<T>` call sites with Serilog's static `Log` API. Goes against DI testability; using Serilog as a *provider* under MEL is the standard ASP.NET Core pattern.
-- Adding metrics or distributed tracing (OpenTelemetry) — separate concern.
-- Encrypting log files at rest — log rotation + retention is enough for v1.
-- Custom enrichers (machine name, process id, etc.) — `ReadFrom.Configuration` lets users add `Serilog.Enrichers.Environment` etc. themselves; we don't bake them in.
+- Cert PEM caching across reloads (Phase 3).
+- Reload coalescing / debounce (Phase 4).
+- Moving the YARP rebuild off the writer's thread (Phase 4 — but reloads are now user-explicit, not auto, so this is a smaller win than originally framed).
+- Lock-free `SniCertificateSelector.Select` (Phase 5 — drive-by).
+- `TlsClientHelloParser` `SequenceReader<byte>` rewrite (Phase 6).
+- Renewal jitter (Phase 6).
+- Service-lifetime audit (Phase 6).
 
-## Review
+---
 
-**Result: 177/177 tests still passing; live `dotnet run` smoke-tested with Serilog Console output.**
+# Phase roadmap (after Phase 1)
+
+In order. Each phase is independently mergeable.
+
+## Phase 2 — SNI selector cert caching by thumbprint
+
+**Win:** the user clicks "Reload" → today every PEM is re-read from disk and PEM→PFX-roundtripped, even certs that haven't changed. Cache loaded `X509Certificate2` by `(certId, thumbprint)`; reuse on reload if the manifest's thumbprint matches.
+
+**Approach:** `SniCertificateSelector.ReloadCore` keeps a `Dictionary<Guid, (X509Certificate2 cert, string thumbprint)> _loadedCerts`. New cert in cache + thumbprint match → reuse. Mismatch → reload the PEM, dispose-deferred the old. Brand new id → load. Removed id → defer dispose. Keeps the "don't dispose immediately because Schannel may still hold it" behavior (current comment lines 184-187) — defer disposal to a 60-second timer, then `Dispose()`.
+
+**Files:** `SniCertificateSelector.cs` only. Tests cover (a) reuse on no-change reload, (b) replace on thumbprint change, (c) deferred disposal of replaced cert.
+
+## Phase 3 — Lock-free `SniCertificateSelector.Select`
+
+**Win:** drop the `lock` per TLS handshake (`SniCertificateSelector.cs:35-38`). Tiny but free.
+
+**Approach:** make `_byHost` a `volatile Dictionary<string, X509Certificate2>` (or wrap in a small immutable record). Writers in `Reload` build a fresh dictionary, then `_byHost = newDict`. Reader does one volatile load, no lock.
+
+**Files:** `SniCertificateSelector.cs` only. One stress test (parallel `Select` while reload runs).
+
+## Phase 4 — Reload coordination (debounce + off-writer-thread rebuild)
+
+**Win:** lower-priority now that reloads are user-explicit (not fired automatically by writes), but renewal workers still trigger bursts. A renewal cycle that rotates 10 self-signed certs fires `SignalReload` 10 times → 10 selector rebuilds + 10 YARP rebuilds back-to-back. Coalesce to one.
+
+**Approach:** new `ReloadCoordinator` singleton with a `Channel<ReloadKind>` worker. Repos publish to the channel from `SignalReload` (instead of cancelling the CTS directly). Worker drains, debounces (~50ms), then fires consumer rebuilds in dependency order: `PassthroughRouteTable` → `HomeYarpConfigProvider` → `SniCertificateSelector`. Consumers expose sync `RebuildSync()` methods; they no longer subscribe to the repo's change token directly. The repo's `IChangeToken` stays available for any external subscriber but the in-process consumers all go through the coordinator.
+
+**Files:** new `ReloadCoordinator`; tweak `JsonApplicationRepository.SignalReload` + `JsonCertificateRepository.SignalReload`; tweak the three consumers' subscription wiring.
+
+## Phase 5 — Lesser items (single PR, drive-by)
+
+- **`TlsClientHelloParser.cs:52`** — replace `handshake.ToArray()` fallback with `SequenceReader<byte>` so multi-segment ClientHellos don't allocate. Edge case, but free.
+- **`AcmeRenewalService` + `SelfSignedRenewalService`** — add per-cert random jitter (0-10% of `RenewalInterval`) to the next-tick delay so N certs at the same threshold don't spike together.
+- **Service-lifetime audit** — `ApplicationService` and `CertificateService` are scoped but stateless — promote to singleton. Verify no scoped dependencies.
+
+---
+
+## Why this order
+
+| Phase | Ships | Hot-path? | Depends on |
+|---|---|---|---|
+| 1 | Snapshot repos + passthrough route table | Yes — every passthrough connection + every snapshot read | Nothing |
+| 2 | Cert PEM caching | Reload-time (user-initiated) | Phase 1 sync snapshot accessor |
+| 3 | Lock-free Select | Yes — every TLS handshake | Nothing (independent) |
+| 4 | Reload coordination | Reload-time | Phase 1 + 2 done so consumers have stable rebuild contracts |
+| 5 | Misc drive-by | Mixed | Nothing |
+
+Phase 1 + 2 cover the user-visible wins (passthrough latency, reload responsiveness). Phase 3 is a single-line change you can ship anytime. Phase 4 is the architectural cleanup that makes future consumers easier to wire. Phase 5 is debt cleanup.
+
+---
+
+## Phase 1 — Review
+
+**Result: 209/209 tests passing (177 baseline + 12 new snapshot tests + 9 new PassthroughRouteTable tests + the pre-existing 11 changed-stub tests still passing). Live `dotnet run` smoke confirms eager constructor load + route table rebuild on startup.**
 
 ### What got built
 
-- **Serilog wiring** — `Program.cs` two-stage bootstrap (`CreateBootstrapLogger` → `UseSerilog(ReadFrom.Configuration + ReadFrom.Services + Enrich.FromLogContext + Enrich.WithProperty("Application","HomeYarp"))`) + `UseSerilogRequestLogging` with a `GetLevel` callback that demotes Blazor heartbeat / `_framework` / `_content` traffic to Debug. `try/catch/finally` with `Log.CloseAndFlush()` around `app.Run()`.
-- **Sinks** — `Serilog.AspNetCore`, `Serilog.Settings.Configuration`, `Serilog.Sinks.Console` (default), `Serilog.Sinks.File`, `Serilog.Sinks.Seq`. The latter two are referenced but inert — they only fire if explicitly listed in `Serilog:WriteTo` (per `Serilog.Settings.Configuration` semantics).
-- **Default config** — `appsettings.json` carries the full `Serilog` section (Console only). `appsettings.Development.json` bumps `HomeYarp` namespace to `Debug`. Per-namespace overrides for `Microsoft.AspNetCore` (Warning), `Microsoft.Hosting.Lifetime`, `Yarp`, `HomeYarp`.
-- **Routing context: `{AppId}` + `{AppName}`** — `HomeYarpConfigProvider.BuildConfig` (per-app `BeginScope` *and* explicit template props for grep-ability), `SniCertificateSelector.Reload` (per-app `BeginScope` plus per-host bind log), `TlsPassthroughConnectionHandler.OnConnectedAsync` (resolved-app log + close log), `ApplicationService.{Create,Update,Delete}Async` (every entry/exit + the `EnsureAutoManagedCertificateAsync` decision branches: source-switch delete, hostname-changed regen, External re-issue rejection, first-time provisioning).
-- **Cert lifecycle logs** — `CertificateService` (upload/delete + PEM-parse failure as Warning), `SelfSignedCertificateService` (issue/regen with thumbprint + validity window), `AcmeService` (now logs ms timing per orchestration, account-load cached vs fresh, per-challenge published/validate/poll, error catch-and-rethrow with timing), `AcmeRenewalService` (per-tick pre/post + per-cert timing), `InMemoryAcmeChallengeStore` (Debug publish/remove), the `/.well-known/acme-challenge/{token}` endpoint (Information on hit, Warning on miss).
-- **Repos** — `JsonApplicationRepository` + `JsonCertificateRepository` log init, startup load count, per-mutation Debug, malformed-file Warning (was a silent skip before — now visible). `FileAcmeAccountStore` logs init + load/save with directory hash.
-- **Controllers + Kestrel** — both controllers gained `ILogger<T>` and log each entry point (Information for writes, Debug for reads). `HomeYarpKestrelConfiguration` logs the resolved listener config at startup and warns if all listeners are disabled.
-- **Test fix-ups** — only two needed: `ApplicationsControllerTests` and `CertificatesControllerTests` got `NullLogger<T>.Instance` since the controllers' loggers are non-nullable. All other services use the nullable-logger pattern (`ILogger<T>? logger = null` → `NullLogger<T>.Instance`) so existing test ctors keep working unchanged.
-- **Docs** — README has a new "Logging" section with the Serilog overview, sample console output, copy-paste File + Seq snippets (including a one-liner Docker invocation for Seq), the level table, and a "Adding more sinks" pointer. CLAUDE.md gained a "Logging" section under Architecture explaining the bootstrap pattern, sink loading semantics, the `{AppId}`/`{AppName}` convention, and the nullable-logger pattern used by services.
+- **`ApplicationSnapshot` + `CertificateSnapshot`** in `HomeYarp.Application/Abstractions/`. Each holds `ImmutableArray<T> All` + `ImmutableDictionary<Guid, T> ById` + case-insensitive `ImmutableDictionary<string, T> ByName`. Static `Empty` and `FromItems(IEnumerable<T>)` factories.
+- **`IApplicationRepository.GetSnapshot()` + `ICertificateRepository.GetSnapshot()`** — sync, lock-free accessor for the current snapshot. Existing async API methods (`GetAllAsync`, `GetByIdAsync`, `GetByNameAsync`) preserved as `Task.FromResult` wrappers so controllers + Blazor pages don't change.
+- **`JsonApplicationRepository` + `JsonCertificateRepository`** — replaced `Dictionary<Guid, T> _cache` + `bool _loaded` + per-read `_gate.WaitAsync` with `volatile ApplicationSnapshot/CertificateSnapshot _snapshot`. Constructor now loads synchronously (small N, JSON deserialize is cheap, removes "consumer started before first read" race). Writers acquire `_writeGate` (single-writer file-I/O serialization), do the I/O, then rebuild the snapshot from the post-mutation `All` and `volatile`-store. Rebuilding from `All` (instead of diffing against the prior snapshot) keeps `ByName` correct when callers mutate the same `Application` instance in place — that bit me on the rename test until I switched away from the diff approach.
+- **`PassthroughRouteTable`** singleton in `HomeYarp.Application/Tls/`. Subscribes to the app repo's reload token, exposes O(1) `TryResolve(sni, out app)` with exact-host `ImmutableDictionary` + wildcard suffix `ImmutableArray`. Replaces the per-connection `GetAllAsync().FirstOrDefault(... Routes.Any(r => r.Hosts.Any(...)))` in `TlsPassthroughConnectionHandler.ResolveAppAsync` (deleted along with the now-unused `HostMatches`).
+- **Hot consumers** (`HomeYarpConfigProvider.BuildConfig`, `SniCertificateSelector.ReloadCore`) — dropped `.GetAwaiter().GetResult()` over `GetAllAsync`, now read `_repo.GetSnapshot().All` (or `.ById` for the cert lookup) directly. Cert PEM read in the selector still uses `GetMaterialAsync` (real file I/O — Phase 2 addresses this).
+- **DI** — `services.AddSingleton<PassthroughRouteTable>()` next to `SniCertificateSelector` in `HomeYarp.Application/DependencyInjection.cs`.
+- **Tests** — extended `JsonApplicationRepositoryTests` + `JsonCertificateRepositoryTests` with snapshot semantics (after-add / after-update / after-rename / after-delete / reference-equality between writes / concurrent-reads-with-writer / constructor-loads). New `PassthroughRouteTableTests` (exact + wildcard match, case-insensitive, disabled-app skip, non-passthrough skip, reload pickup/drop, exact-wins-over-wildcard). Added `RepositoryMockExtensions.WithApps` / `WithCerts` test helper to keep mock setups terse — applied to `HomeYarpConfigProviderTests` and `SniCertificateSelectorTests` whose mocks now need to stub `GetSnapshot` consistently with `GetAllAsync`.
+- **CLAUDE.md** — added a "Snapshot-backed repositories" subsection under "Change-token reload chain" and a 4th bullet covering `PassthroughRouteTable`. The old line "TlsPassthroughConnectionHandler does not subscribe — it just queries `GetAllAsync()` per connection. The in-memory cache + small N for homelab use makes this fine." is gone — the route table is now the canonical pattern.
 
 ### Live smoke
 
-`timeout 8 dotnet run` shows the full chain working — `JsonApplicationRepository Loaded 2 application(s)`, then `Built YARP cluster 'echo-cluster' for app 'echo' (05315e43-…) with 1 destination(s) and 1 route(s)`, then `YARP config built: 2 route(s), 2 cluster(s), 2 application(s)`, then Kestrel binding messages, then `ACME renewal worker is disabled` since Acme:Enabled is off. Routing logs carry both AppId and AppName as required.
+`timeout 8 dotnet run` (existing 2-app dataset, 1 passthrough):
+```
+JsonApplicationRepository initialized at .../data/applications with 2 application(s)
+Passthrough route table rebuilt: 1 exact host(s), 0 wildcard(s)
+YARP config built: 2 route(s), 2 cluster(s), 2 application(s)
+Listening for HTTPS-passthrough (raw L4 + SNI peek) on port 5444
+Now listening on: http://[::]:5268 / https://[::]:5443 / http://[::]:5444
+```
+Eager constructor load fires before DI returns. Route table rebuilds during selector startup. All three listeners bind cleanly.
+
+### Surprises / corrections during the work
+
+- The plan said "existing HomeYarpConfigProvider / SniCertificateSelector tests should still pass — interface contract preserved." Wrong: adding `GetSnapshot()` to the interface meant NSubstitute's auto-null return broke 19 tests on first run. Fixed by adding a `RepositoryMockExtensions.WithApps`/`WithCerts` helper that stubs both `GetSnapshot` and `GetAllAsync` together, so tests stay terse.
+- Initial `ReplaceItem` tried to diff incoming-vs-previous to detect renames. That fails when callers mutate the same instance in place (the Blazor JSON-edit path does this, and the `GetSnapshot_AfterRename_DropsOldNameBinding` test caught it). Switched to "rebuild ById/ByName from the post-mutation `All` array via `FromItems`" — robust and trivially cheap at homelab N.
+- `ImmutableArray<T>.Remove(T)` uses default equality (reference for class types), so `RemoveItem` taking the `existing` reference would have worked in practice — but I switched to `RemoveAll(a => a.Id == id)` for clarity. Same cost.
 
 ### Notes for future contributors
 
-- Adding a new Serilog sink: `<PackageReference Include="Serilog.Sinks.X" />` in `HomeYarp.WebServer.csproj`, then `Serilog:Using` + `Serilog:WriteTo` entry in `appsettings.json` (or environment-specific override). No code changes — `ReadFrom.Configuration` handles discovery.
-- Any new routing-adjacent code (route mapping, cert binding, TLS connection handlers, application CRUD) should keep the `{AppId}` + `{AppName}` convention for filterability.
-- Services use `ILogger<T>? logger = null` to keep test ctors backwards-compatible. Controllers take non-nullable loggers since DI always provides them and the test boilerplate is small.
+- `_writeGate` is now write-only — readers must never touch it. Adding a new read API? Use `_snapshot` directly.
+- The snapshot is **immutable**, so it's safe to capture into local variables and iterate without re-reading. This matters for hot paths: capture `var s = _snapshot;` once at the top, not per-loop-iteration.
+- New consumers that need to react to repo changes should mirror `PassthroughRouteTable`'s pattern: subscribe to `repo.GetReloadToken()` via `ChangeToken.OnChange`, read via `GetSnapshot()` (sync), build an immutable index, `volatile`-store. Don't go through the async API on the change-token callback path.
+- Test mocks for `IApplicationRepository` / `ICertificateRepository` must stub `GetSnapshot` — use `RepositoryMockExtensions.WithApps` / `WithCerts` in `HomeYarp.Tests/TestHelpers/` for the right combined setup.
+
+---
+
+## Phase 2 — Review
+
+**Result: 213/213 tests passing (Phase 1 baseline 209 + 4 new SNI selector cache/disposal tests). Live `dotnet run` boots cleanly; selector is lazy-constructed by Kestrel on first TLS handshake so no startup log entry appears in the 8s smoke window.**
+
+### What got built
+
+- **`SniCertificateSelector` cert cache** — added persistent `Dictionary<Guid, LoadedCert> _loadedCerts` (a `record(X509Certificate2 Cert, string Thumbprint)`) that survives across reloads. On each `ReloadCore`, for every cert id referenced by an enabled offload-mode app, the selector first checks the cache: if `cached.Thumbprint == certMeta.Thumbprint` (case-insensitive), it reuses the existing `X509Certificate2` and skips `GetMaterialAsync` + `LoadX509` (the disk read + PEM→PFX roundtrip). The reload-summary log now reports `{Reused}/{Fresh}/{Orphaned}` so it's visible whether the cache is hot.
+- **Reload serialization** — added `_reloadLock` separate from `_stateLock`. The whole `ReloadCore` body runs under `_reloadLock` so two concurrent reloads (apps token + certs token firing on different threads) can't double-load the same cert or overwrite each other's `_loadedCerts`. `_stateLock` still guards the brief `_loadedCerts`/`_byHost` reference swap and the `Select` snapshot read.
+- **Deferred disposal** — replaced the "leak X509Certificate2 instances to the finalizer" approach with explicit deferred dispose. When a cert is replaced (thumbprint changed) or orphaned (no app references it anymore), `ScheduleDeferredDispose` schedules `cert.Dispose()` after `DeferredDisposeDelay = 60s`. Uses `Task.Delay(delay, _timeProvider, _disposeCts.Token)` so (a) tests with `FakeTimeProvider` can advance virtual time, (b) selector `Dispose()` cancels all pending disposals and runs them eagerly.
+- **`TimeProvider` parameter** — selector ctor now takes an optional `TimeProvider? timeProvider = null` (defaults to `TimeProvider.System`). DI already registers `TryAddSingleton(TimeProvider.System)` from `AddHomeYarpApplication`, so production wiring needs no change. Existing tests pass because the parameter is optional.
+- **Tests** — added `Reload_WhenCertThumbprintUnchanged_DoesNotReadMaterialAgain` (verifies `GetMaterialAsync` call count stays at 1 after a same-thumbprint reload), `Reload_WhenCertThumbprintChanges_ReadsMaterialAgain` (call count goes to 2 when the metadata thumbprint changes), `Reload_WhenAppRemoved_OrphanedCertNotImmediatelyDisposed` (cert handle still alive at t=0), `Reload_WhenAppRemoved_OrphanedCertDisposedAfterDelay` (`time.Advance(61s)` triggers disposal — verified via `cert.Handle == IntPtr.Zero`).
+- **Test helper `NewIsolatedSubstitutesWithSingleCert`** — bypasses the test class's default constructor stubs (which use `Returns(_ => Substitute.For<...>())` lambdas and break NSubstitute's call tracking when overridden). Mirrors the approach already used by `Reload_WhenCertMaterialThrows`.
+- **CLAUDE.md** — updated bullet 3 of "Change-token reload chain" to describe the cache-by-thumbprint behavior, deferred-dispose semantics, and the `TimeProvider` injection point.
+
+### Surprises / corrections during the work
+
+- First test run failed because my test data used a placeholder `Thumbprint = "ABCDEF1234567890"` in the manifest, but the cache stores `x509.Thumbprint` (the actual thumbprint computed from the PEM). Cache miss every reload → no win. Fixed by computing the real thumbprint via `X509Certificate2.CreateFromPem(certPem, keyPem).Thumbprint` in the test helper. **Production code already does this** (e.g. `CertificateService.UploadAsync` reads the thumbprint from the parsed cert before persisting), so the SUT contract is correct — the test data was wrong.
+- NSubstitute's `Returns(_ => SomethingThatCallsAnotherSubstitute())` pattern in the test class constructor (`NeverFiringToken()` calls `Substitute.For<IChangeToken>()`) breaks call tracking when downstream tests try to override the same method. Solved by giving the new tests their own substitutes via `NewIsolatedSubstitutesWithSingleCert` — same workaround the existing `Reload_WhenCertMaterialThrows_DoesNotPropagateAndKeepsPreviousBindings` already uses.
+- `cert.Handle == IntPtr.Zero` is the reliable cross-platform signal for "X509Certificate2 has been disposed" — `cert.Thumbprint` caches the value internally and keeps returning it post-disposal on .NET 10.
+
+### Notes for future contributors
+
+- The cache is keyed on the manifest's `Thumbprint` field. **Whenever code persists or rotates a certificate, it MUST set `Thumbprint` to match the actual cert's thumbprint** (uppercase hex). All current writers do — `CertificateService.UploadAsync`, `SelfSignedCertificateService.IssueAsync`/`RegenerateAsync`, `AcmeService.IssueAsync`/`RenewAsync`. If you add a new writer, mirror that behavior or the SNI selector will reload from disk every time even when nothing changed.
+- `DeferredDisposeDelay = 60s` is conservative for typical handshake lifetimes. If you ever observe "Cannot find the requested object" Schannel errors after a reload, increase it. If you ever want eager reclaim during testing, inject a `FakeTimeProvider` and advance it.
+- New tests that need to interact with the selector's reload subscription should use the `NewIsolatedSubstitutesWithSingleCert` + `FireApps` helpers, not the class's default `_apps`/`_certs` fields. The class-level fields are pre-stubbed in a way that conflicts with downstream `.Returns(...)` overrides.
+
+---
+
+## Phase 3 — Review
+
+**Result: 214/214 tests passing (Phase 2 baseline 213 + 1 new parallel-readers stress test). Build clean, smoke clean.**
+
+### What got built
+
+- **`_byHost` is now `volatile Dictionary<string, X509Certificate2>`** — the publication field for the host-binding map. Writers in `ReloadCore` build a fresh dict, populate it fully, then assign (`_byHost = newByHost;`). Volatile semantics give release-on-write / acquire-on-read so readers either see the previous fully-published dict or the new one — never a half-built one.
+- **`Select(sni)` is lock-free** — replaced the `lock (_stateLock) { snapshot = _byHost; }` guard with a single volatile read (`var snapshot = _byHost;`). No lock per TLS handshake, no allocation.
+- **`_stateLock` removed entirely** — its only other use guarded the `_loadedCerts` swap, but `_loadedCerts` is exclusively touched inside `_reloadLock` (in `ReloadCore` and `Dispose`), so no extra lock is needed. Disposing now takes only `_reloadLock`.
+- **`Dispose` rewires the `_byHost` swap** — instead of `_byHost.Clear()` (which would mutate a dict a concurrent `Select` might still be reading), Dispose publishes a fresh empty dict via the volatile field. Concurrent readers either see the populated pre-Dispose dict or the new empty one — both safe.
+- **Stress test** — `Select_ParallelReadersDuringReload_NeverThrowAndAlwaysReturnConsistentSnapshot` spins up 8 reader threads calling `Select` in tight loops while a writer thread fires reload events for ~400ms. Every non-null result has its `.Thumbprint` touched to verify the cert is alive (would throw if torn). All readers complete without exception.
+
+### Surprises / corrections during the work
+
+- The stress test failed to compile on first try because I used `Enumerable.Range(0, n).Select(_ => ...)` and then `_ = result.Thumbprint` inside the inner lambda. The lambda parameter `_` is `int` from `Range`; the outer `_ = ...` discard tried to assign a `string` to that captured `int`. Renamed the lambda parameter to `i` and the discard to `var probe = ...`. C# discards (`_`) are normally context-free, but they collide with explicitly-named `_` parameters in enclosing scopes.
+
+### Notes for future contributors
+
+- `_byHost` must remain `volatile` — `Volatile.Read`/`Volatile.Write` calls would be equivalent but `volatile` field is the cleanest expression of intent. Don't drop the modifier.
+- Treat the published dict as **immutable** — never mutate `_byHost` in place. Build a new one and atomic-swap the reference. The current `Dispose` violation (`_byHost.Clear()`) was the bug to avoid.
+- Phase 3 is independent of Phase 4 (reload coordination). You can ship them in either order or together.

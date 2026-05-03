@@ -17,9 +17,8 @@ public sealed class JsonApplicationRepository : IApplicationRepository
 
     private readonly string _directory;
     private readonly ILogger<JsonApplicationRepository> _logger;
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Dictionary<Guid, Domain.Application> _cache = new();
-    private bool _loaded;
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private volatile ApplicationSnapshot _snapshot = ApplicationSnapshot.Empty;
     private CancellationTokenSource _reloadCts = new();
 
     public JsonApplicationRepository(IOptions<JsonStoreOptions> options, ILogger<JsonApplicationRepository>? logger = null)
@@ -32,108 +31,78 @@ public sealed class JsonApplicationRepository : IApplicationRepository
         _directory = Path.Combine(root, "applications");
         Directory.CreateDirectory(_directory);
         _logger = logger ?? NullLogger<JsonApplicationRepository>.Instance;
-        _logger.LogInformation("JsonApplicationRepository initialized at {Directory}", _directory);
+
+        _snapshot = LoadFromDisk();
+        _logger.LogInformation(
+            "JsonApplicationRepository initialized at {Directory} with {Count} application(s)",
+            _directory,
+            _snapshot.All.Length);
     }
 
-    public async Task<IReadOnlyList<Domain.Application>> GetAllAsync(CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.Values.ToList();
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public ApplicationSnapshot GetSnapshot() => _snapshot;
 
-    public async Task<Domain.Application?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.TryGetValue(id, out var app) ? app : null;
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<IReadOnlyList<Domain.Application>> GetAllAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<Domain.Application>>(_snapshot.All);
 
-    public async Task<Domain.Application?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.Values.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<Domain.Application?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+        => Task.FromResult(_snapshot.ById.TryGetValue(id, out var app) ? app : null);
+
+    public Task<Domain.Application?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+        => Task.FromResult(_snapshot.ByName.TryGetValue(name, out var app) ? app : null);
 
     public async Task AddAsync(Domain.Application application, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
-            _cache[application.Id] = application;
             await WriteFileAsync(application, cancellationToken);
+            _snapshot = ReplaceItem(_snapshot, application);
         }
         finally
         {
-            _gate.Release();
+            _writeGate.Release();
         }
         _logger.LogDebug("Application '{AppName}' ({AppId}) persisted to disk (reload deferred)", application.Name, application.Id);
     }
 
     public async Task UpdateAsync(Domain.Application application, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
-            _cache[application.Id] = application;
             await WriteFileAsync(application, cancellationToken);
+            _snapshot = ReplaceItem(_snapshot, application);
         }
         finally
         {
-            _gate.Release();
+            _writeGate.Release();
         }
         _logger.LogDebug("Application '{AppName}' ({AppId}) updated on disk (reload deferred)", application.Name, application.Id);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
         bool removed;
         string? removedName = null;
-        await _gate.WaitAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
-            if (_cache.TryGetValue(id, out var existing))
+            if (!_snapshot.ById.TryGetValue(id, out var existing))
             {
-                removedName = existing.Name;
+                return false;
             }
-            removed = _cache.Remove(id);
-            if (removed)
+            removedName = existing.Name;
+            var path = GetFilePath(id);
+            if (File.Exists(path))
             {
-                var path = GetFilePath(id);
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
+                File.Delete(path);
             }
+            _snapshot = RemoveItem(_snapshot, id);
+            removed = true;
         }
         finally
         {
-            _gate.Release();
+            _writeGate.Release();
         }
         if (removed)
         {
@@ -144,44 +113,65 @@ public sealed class JsonApplicationRepository : IApplicationRepository
 
     public IChangeToken GetReloadToken() => new CancellationChangeToken(_reloadCts.Token);
 
-    private async Task EnsureLoadedAsync(CancellationToken cancellationToken)
+    public void SignalReload()
     {
-        if (_loaded)
-        {
-            return;
-        }
+        var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
+        // Cancel runs registered ChangeToken callbacks synchronously on this thread.
+        // Each consumer (HomeYarpConfigProvider, SniCertificateSelector) catches its
+        // own exceptions, so a bad cert can't propagate back through the request that
+        // triggered the reload and leave the in-memory snapshot half-swapped.
+        try { oldCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { _logger.LogError(ex, "Application reload callbacks threw"); }
+        oldCts.Dispose();
+        _logger.LogInformation("JsonApplicationRepository reload signal fired");
+    }
 
-        await _gate.WaitAsync(cancellationToken);
-        try
+    private ApplicationSnapshot LoadFromDisk()
+    {
+        var items = new List<Domain.Application>();
+        foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
         {
-            if (_loaded)
+            try
             {
-                return;
-            }
-
-            foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
-            {
-                try
+                using var stream = File.OpenRead(file);
+                var app = JsonSerializer.Deserialize<Domain.Application>(stream, SerializerOptions);
+                if (app is not null)
                 {
-                    await using var stream = File.OpenRead(file);
-                    var app = await JsonSerializer.DeserializeAsync<Domain.Application>(stream, SerializerOptions, cancellationToken);
-                    if (app is not null)
-                    {
-                        _cache[app.Id] = app;
-                    }
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogWarning(ex, "Skipping malformed application file '{File}'", file);
+                    items.Add(app);
                 }
             }
-            _loaded = true;
-            _logger.LogInformation("Loaded {Count} application(s) from {Directory}", _cache.Count, _directory);
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Skipping malformed application file '{File}'", file);
+            }
         }
-        finally
+        return ApplicationSnapshot.FromItems(items);
+    }
+
+    private static ApplicationSnapshot ReplaceItem(ApplicationSnapshot current, Domain.Application incoming)
+    {
+        var all = current.All;
+        var existingIndex = -1;
+        for (var i = 0; i < all.Length; i++)
         {
-            _gate.Release();
+            if (all[i].Id == incoming.Id)
+            {
+                existingIndex = i;
+                break;
+            }
         }
+
+        var newAll = existingIndex >= 0 ? all.SetItem(existingIndex, incoming) : all.Add(incoming);
+        // Rebuild ById and ByName from newAll — robust against callers that mutate-in-place
+        // (the same Application reference can carry a new Name, so a diff against `current` lies).
+        return ApplicationSnapshot.FromItems(newAll);
+    }
+
+    private static ApplicationSnapshot RemoveItem(ApplicationSnapshot current, Guid id)
+    {
+        var newAll = current.All.RemoveAll(a => a.Id == id);
+        return ApplicationSnapshot.FromItems(newAll);
     }
 
     private async Task WriteFileAsync(Domain.Application application, CancellationToken cancellationToken)
@@ -205,18 +195,4 @@ public sealed class JsonApplicationRepository : IApplicationRepository
     }
 
     private string GetFilePath(Guid id) => Path.Combine(_directory, id.ToString("N") + ".json");
-
-    public void SignalReload()
-    {
-        var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
-        // Cancel runs registered ChangeToken callbacks synchronously on this thread.
-        // Each consumer (HomeYarpConfigProvider, SniCertificateSelector) catches its
-        // own exceptions, so a bad cert can't propagate back through the request that
-        // triggered the reload and leave the in-memory snapshot half-swapped.
-        try { oldCts.Cancel(); }
-        catch (ObjectDisposedException) { }
-        catch (Exception ex) { _logger.LogError(ex, "Application reload callbacks threw"); }
-        oldCts.Dispose();
-        _logger.LogInformation("JsonApplicationRepository reload signal fired");
-    }
 }

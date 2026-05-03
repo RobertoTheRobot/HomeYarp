@@ -18,9 +18,8 @@ public sealed class JsonCertificateRepository : ICertificateRepository
 
     private readonly string _directory;
     private readonly ILogger<JsonCertificateRepository> _logger;
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Dictionary<Guid, Certificate> _cache = new();
-    private bool _loaded;
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private volatile CertificateSnapshot _snapshot = CertificateSnapshot.Empty;
     private CancellationTokenSource _reloadCts = new();
 
     public JsonCertificateRepository(IOptions<JsonStoreOptions> options, ILogger<JsonCertificateRepository>? logger = null)
@@ -33,54 +32,27 @@ public sealed class JsonCertificateRepository : ICertificateRepository
         _directory = Path.Combine(root, "certificates");
         Directory.CreateDirectory(_directory);
         _logger = logger ?? NullLogger<JsonCertificateRepository>.Instance;
-        _logger.LogInformation("JsonCertificateRepository initialized at {Directory}", _directory);
+
+        _snapshot = LoadFromDisk();
+        _logger.LogInformation(
+            "JsonCertificateRepository initialized at {Directory} with {Count} certificate(s)",
+            _directory,
+            _snapshot.All.Length);
     }
 
-    public async Task<IReadOnlyList<Certificate>> GetAllAsync(CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.Values.ToList();
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public CertificateSnapshot GetSnapshot() => _snapshot;
 
-    public async Task<Certificate?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.TryGetValue(id, out var c) ? c : null;
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<IReadOnlyList<Certificate>> GetAllAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<Certificate>>(_snapshot.All);
 
-    public async Task<Certificate?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
-    {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return _cache.Values.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<Certificate?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+        => Task.FromResult(_snapshot.ById.TryGetValue(id, out var c) ? c : null);
+
+    public Task<Certificate?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+        => Task.FromResult(_snapshot.ByName.TryGetValue(name, out var c) ? c : null);
 
     public async Task<CertificateMaterial?> GetMaterialAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
         var certPath = GetCertPath(id);
         var keyPath = GetKeyPath(id);
         if (!File.Exists(certPath) || !File.Exists(keyPath))
@@ -94,49 +66,46 @@ public sealed class JsonCertificateRepository : ICertificateRepository
 
     public async Task SaveAsync(Certificate certificate, CertificateMaterial material, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
-            _cache[certificate.Id] = certificate;
             await WriteAtomicAsync(GetCertPath(certificate.Id), material.CertificatePem, cancellationToken);
             await WriteAtomicAsync(GetKeyPath(certificate.Id), material.PrivateKeyPem, cancellationToken);
             await WriteManifestAsync(certificate, cancellationToken);
+            _snapshot = ReplaceItem(_snapshot, certificate);
         }
         finally
         {
-            _gate.Release();
+            _writeGate.Release();
         }
         _logger.LogDebug("Certificate '{CertName}' ({CertId}) persisted to disk (reload deferred)", certificate.Name, certificate.Id);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureLoadedAsync(cancellationToken);
         bool removed;
         string? removedName = null;
-        await _gate.WaitAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
         try
         {
-            if (_cache.TryGetValue(id, out var existing))
+            if (!_snapshot.ById.TryGetValue(id, out var existing))
             {
-                removedName = existing.Name;
+                return false;
             }
-            removed = _cache.Remove(id);
-            if (removed)
+            removedName = existing.Name;
+            foreach (var path in new[] { GetManifestPath(id), GetCertPath(id), GetKeyPath(id) })
             {
-                foreach (var path in new[] { GetManifestPath(id), GetCertPath(id), GetKeyPath(id) })
+                if (File.Exists(path))
                 {
-                    if (File.Exists(path))
-                    {
-                        File.Delete(path);
-                    }
+                    File.Delete(path);
                 }
             }
+            _snapshot = RemoveItem(_snapshot, id);
+            removed = true;
         }
         finally
         {
-            _gate.Release();
+            _writeGate.Release();
         }
         if (removed)
         {
@@ -147,44 +116,59 @@ public sealed class JsonCertificateRepository : ICertificateRepository
 
     public IChangeToken GetReloadToken() => new CancellationChangeToken(_reloadCts.Token);
 
-    private async Task EnsureLoadedAsync(CancellationToken cancellationToken)
+    public void SignalReload()
     {
-        if (_loaded)
-        {
-            return;
-        }
+        var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
+        try { oldCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { _logger.LogError(ex, "Certificate reload callbacks threw"); }
+        oldCts.Dispose();
+        _logger.LogInformation("JsonCertificateRepository reload signal fired");
+    }
 
-        await _gate.WaitAsync(cancellationToken);
-        try
+    private CertificateSnapshot LoadFromDisk()
+    {
+        var items = new List<Certificate>();
+        foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
         {
-            if (_loaded)
+            try
             {
-                return;
-            }
-
-            foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
-            {
-                try
+                using var stream = File.OpenRead(file);
+                var cert = JsonSerializer.Deserialize<Certificate>(stream, SerializerOptions);
+                if (cert is not null)
                 {
-                    await using var stream = File.OpenRead(file);
-                    var cert = await JsonSerializer.DeserializeAsync<Certificate>(stream, SerializerOptions, cancellationToken);
-                    if (cert is not null)
-                    {
-                        _cache[cert.Id] = cert;
-                    }
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogWarning(ex, "Skipping malformed certificate manifest '{File}'", file);
+                    items.Add(cert);
                 }
             }
-            _loaded = true;
-            _logger.LogInformation("Loaded {Count} certificate(s) from {Directory}", _cache.Count, _directory);
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Skipping malformed certificate manifest '{File}'", file);
+            }
         }
-        finally
+        return CertificateSnapshot.FromItems(items);
+    }
+
+    private static CertificateSnapshot ReplaceItem(CertificateSnapshot current, Certificate incoming)
+    {
+        var all = current.All;
+        var existingIndex = -1;
+        for (var i = 0; i < all.Length; i++)
         {
-            _gate.Release();
+            if (all[i].Id == incoming.Id)
+            {
+                existingIndex = i;
+                break;
+            }
         }
+
+        var newAll = existingIndex >= 0 ? all.SetItem(existingIndex, incoming) : all.Add(incoming);
+        return CertificateSnapshot.FromItems(newAll);
+    }
+
+    private static CertificateSnapshot RemoveItem(CertificateSnapshot current, Guid id)
+    {
+        var newAll = current.All.RemoveAll(c => c.Id == id);
+        return CertificateSnapshot.FromItems(newAll);
     }
 
     private async Task WriteManifestAsync(Certificate certificate, CancellationToken cancellationToken)
@@ -224,14 +208,4 @@ public sealed class JsonCertificateRepository : ICertificateRepository
     private string GetCertPath(Guid id) => Path.Combine(_directory, id.ToString("N") + ".cert.pem");
 
     private string GetKeyPath(Guid id) => Path.Combine(_directory, id.ToString("N") + ".key.pem");
-
-    public void SignalReload()
-    {
-        var oldCts = Interlocked.Exchange(ref _reloadCts, new CancellationTokenSource());
-        try { oldCts.Cancel(); }
-        catch (ObjectDisposedException) { }
-        catch (Exception ex) { _logger.LogError(ex, "Certificate reload callbacks threw"); }
-        oldCts.Dispose();
-        _logger.LogInformation("JsonCertificateRepository reload signal fired");
-    }
 }

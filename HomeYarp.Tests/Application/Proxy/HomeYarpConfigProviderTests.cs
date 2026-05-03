@@ -24,7 +24,7 @@ public class HomeYarpConfigProviderTests
     public void GetConfig_WithSingleEnabledApp_BuildsRouteAndCluster()
     {
         var app = ApplicationFactory.Create(name: "grafana", routeHosts: new[] { "grafana.lan" });
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -45,7 +45,7 @@ public class HomeYarpConfigProviderTests
     public void GetConfig_WithDisabledApp_OmitsItFromConfig()
     {
         var app = ApplicationFactory.Create(name: "off", enabled: false, routeHosts: new[] { "off.lan" });
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -59,7 +59,7 @@ public class HomeYarpConfigProviderTests
     {
         var app = ApplicationFactory.Create(name: "empty", routeHosts: new[] { "x.lan" });
         app.Cluster.Destinations.Clear();
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -73,7 +73,7 @@ public class HomeYarpConfigProviderTests
     {
         var app = ApplicationFactory.Create(name: "custom", routeHosts: new[] { "x.lan" });
         app.Routes[0].RouteId = "my-route";
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -90,7 +90,7 @@ public class HomeYarpConfigProviderTests
             new() { ["PathSet"] = "/api/v2" },
             new() { ["RequestHeader"] = "X-Forwarded-User", ["Set"] = "anonymous" }
         };
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -105,7 +105,7 @@ public class HomeYarpConfigProviderTests
     public void GetConfig_WithoutTransforms_LeavesTransformsNull()
     {
         var app = ApplicationFactory.Create(name: "plain", routeHosts: new[] { "x.lan" });
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -135,7 +135,7 @@ public class HomeYarpConfigProviderTests
                 ReactivationPeriod = TimeSpan.FromMinutes(1)
             }
         };
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -159,7 +159,7 @@ public class HomeYarpConfigProviderTests
     public void GetConfig_WithoutHealthCheck_LeavesItNull()
     {
         var app = ApplicationFactory.Create(name: "no-hc", routeHosts: new[] { "x.lan" });
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -182,7 +182,7 @@ public class HomeYarpConfigProviderTests
             VersionPolicy = "RequestVersionExact",
             AllowResponseBuffering = false
         };
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -201,7 +201,7 @@ public class HomeYarpConfigProviderTests
     {
         var app = ApplicationFactory.Create(name: "vbad", routeHosts: new[] { "x.lan" });
         app.Cluster.HttpRequest = new HttpRequestConfiguration { Version = "garbage" };
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -213,7 +213,7 @@ public class HomeYarpConfigProviderTests
     public void GetConfig_WithEmptyHostsList_SetsHostsToNull()
     {
         var app = ApplicationFactory.Create(name: "no-hosts", routeHosts: Array.Empty<string>());
-        _repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
+        _repo.WithApps(app);
 
         using var provider = new HomeYarpConfigProvider(_repo);
         var config = provider.GetConfig();
@@ -231,10 +231,10 @@ public class HomeYarpConfigProviderTests
         var first = ApplicationFactory.Create(name: "first", routeHosts: new[] { "x.lan" });
         var calls = 0;
         var repo = Substitute.For<IApplicationRepository>();
-        repo.GetAllAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        repo.GetSnapshot().Returns(_ =>
         {
             calls++;
-            if (calls == 1) return Task.FromResult<IReadOnlyList<DomainApplication>>(new[] { first });
+            if (calls == 1) return ApplicationSnapshot.FromItems(new[] { first });
             throw new InvalidOperationException("simulated reload failure");
         });
         var cts = new CancellationTokenSource();

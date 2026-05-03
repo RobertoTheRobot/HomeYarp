@@ -5,6 +5,11 @@ namespace HomeYarp.Application.Abstractions;
 
 public interface ICertificateRepository
 {
+    /// <summary>
+    /// Returns the current immutable snapshot. Lock-free, allocation-free per call.
+    /// </summary>
+    CertificateSnapshot GetSnapshot();
+
     Task<IReadOnlyList<Certificate>> GetAllAsync(CancellationToken cancellationToken = default);
 
     Task<Certificate?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);

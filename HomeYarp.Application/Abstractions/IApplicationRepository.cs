@@ -5,6 +5,13 @@ namespace HomeYarp.Application.Abstractions;
 
 public interface IApplicationRepository
 {
+    /// <summary>
+    /// Returns the current immutable snapshot. Lock-free, allocation-free per call.
+    /// Hot paths (passthrough handler, YARP config rebuild, SNI selector reload) consume this
+    /// instead of awaiting <see cref="GetAllAsync"/>.
+    /// </summary>
+    ApplicationSnapshot GetSnapshot();
+
     Task<IReadOnlyList<Domain.Application>> GetAllAsync(CancellationToken cancellationToken = default);
 
     Task<Domain.Application?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);

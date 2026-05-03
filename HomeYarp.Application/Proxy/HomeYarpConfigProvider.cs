@@ -51,7 +51,7 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
 
     private HomeYarpConfig BuildConfig()
     {
-        var applications = _repository.GetAllAsync().GetAwaiter().GetResult();
+        var applications = _repository.GetSnapshot().All;
 
         var routes = new List<RouteConfig>();
         var clusters = new List<ClusterConfig>();
@@ -146,7 +146,7 @@ public sealed class HomeYarpConfigProvider : IProxyConfigProvider, IDisposable
             "YARP config built: {RouteCount} route(s), {ClusterCount} cluster(s), {AppCount} application(s) ({Disabled} disabled, {NoDest} skipped without destinations)",
             routes.Count,
             clusters.Count,
-            applications.Count,
+            applications.Length,
             skippedDisabled,
             skippedNoDestinations);
 

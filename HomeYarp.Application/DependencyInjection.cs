@@ -25,6 +25,7 @@ public static class DependencyInjection
 
         services.AddSingleton<IProxyConfigProvider, HomeYarpConfigProvider>();
         services.AddSingleton<SniCertificateSelector>();
+        services.AddSingleton<PassthroughRouteTable>();
         services.AddSingleton<TlsPassthroughConnectionHandler>();
         services.AddSingleton<IAcmeChallengeStore, InMemoryAcmeChallengeStore>();
         services.AddSingleton<IRuntimeReloadService, RuntimeReloadService>();

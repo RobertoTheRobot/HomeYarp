@@ -9,21 +9,41 @@ namespace HomeYarp.Application.Tls;
 
 public sealed class SniCertificateSelector : IDisposable
 {
+    /// <summary>
+    /// Delay before disposing replaced/orphaned X509Certificate2 instances so Schannel can finish
+    /// in-flight handshakes that captured the prior reference. Disposing under it produces
+    /// "Cannot find the requested object" errors on the very next handshake.
+    /// </summary>
+    private static readonly TimeSpan DeferredDisposeDelay = TimeSpan.FromSeconds(60);
+
     private readonly ICertificateRepository _certificates;
     private readonly IApplicationRepository _applications;
     private readonly ILogger<SniCertificateSelector> _logger;
-    private readonly object _lock = new();
+    private readonly TimeProvider _timeProvider;
+    private readonly object _reloadLock = new();
+    private readonly CancellationTokenSource _disposeCts = new();
 
-    private Dictionary<string, X509Certificate2> _byHost = new(StringComparer.OrdinalIgnoreCase);
-    private List<X509Certificate2> _loaded = new();
+    // Lock-free per-handshake reads: a single volatile load returns the current binding map.
+    // Writers in ReloadCore build a fresh Dictionary, populate it fully, then atomically swap
+    // the reference. Volatile release-on-write / acquire-on-read guarantees readers never see
+    // a half-constructed dict. The dict itself is treated as immutable post-publication.
+    private volatile Dictionary<string, X509Certificate2> _byHost = new(StringComparer.OrdinalIgnoreCase);
+    // Persistent across reloads — reuse loaded X509 instances when the cert metadata's thumbprint
+    // hasn't changed. Touched ONLY inside _reloadLock (ReloadCore + Dispose).
+    private Dictionary<Guid, LoadedCert> _loadedCerts = new();
     private IDisposable? _certSubscription;
     private IDisposable? _appSubscription;
 
-    public SniCertificateSelector(ICertificateRepository certificates, IApplicationRepository applications, ILogger<SniCertificateSelector>? logger = null)
+    public SniCertificateSelector(
+        ICertificateRepository certificates,
+        IApplicationRepository applications,
+        ILogger<SniCertificateSelector>? logger = null,
+        TimeProvider? timeProvider = null)
     {
         _certificates = certificates;
         _applications = applications;
         _logger = logger ?? NullLogger<SniCertificateSelector>.Instance;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         Reload();
         _certSubscription = ChangeToken.OnChange(_certificates.GetReloadToken, Reload);
         _appSubscription = ChangeToken.OnChange(_applications.GetReloadToken, Reload);
@@ -31,11 +51,8 @@ public sealed class SniCertificateSelector : IDisposable
 
     public X509Certificate2? Select(string? sni)
     {
-        Dictionary<string, X509Certificate2> snapshot;
-        lock (_lock)
-        {
-            snapshot = _byHost;
-        }
+        // Single volatile read — no lock per TLS handshake.
+        var snapshot = _byHost;
 
         if (string.IsNullOrWhiteSpace(sni))
         {
@@ -83,113 +100,178 @@ public sealed class SniCertificateSelector : IDisposable
 
     private void ReloadCore()
     {
-        _logger.LogDebug("SNI selector: reload triggered (apps or certs changed)");
-
-        var apps = _applications.GetAllAsync().GetAwaiter().GetResult();
-        var certs = _certificates.GetAllAsync().GetAwaiter().GetResult();
-
-        var certById = new Dictionary<Guid, Certificate>();
-        foreach (var c in certs)
+        lock (_reloadLock)
         {
-            certById[c.Id] = c;
-        }
+            _logger.LogDebug("SNI selector: reload triggered (apps or certs changed)");
 
-        var loaded = new Dictionary<Guid, X509Certificate2>();
-        var byHost = new Dictionary<string, X509Certificate2>(StringComparer.OrdinalIgnoreCase);
+            var apps = _applications.GetSnapshot().All;
+            var certById = _certificates.GetSnapshot().ById;
 
-        foreach (var app in apps)
-        {
-            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            var newLoaded = new Dictionary<Guid, LoadedCert>();
+            var newByHost = new Dictionary<string, X509Certificate2>(StringComparer.OrdinalIgnoreCase);
+            var reused = 0;
+            var fresh = 0;
+
+            foreach (var app in apps)
             {
-                ["AppId"] = app.Id,
-                ["AppName"] = app.Name
-            });
+                using var scope = _logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["AppId"] = app.Id,
+                    ["AppName"] = app.Name
+                });
 
-            if (!app.Enabled || app.Tls.Mode != TlsMode.Offload || app.Tls.CertificateId is null)
-            {
-                continue;
-            }
+                if (!app.Enabled || app.Tls.Mode != TlsMode.Offload || app.Tls.CertificateId is null)
+                {
+                    continue;
+                }
 
-            if (!certById.TryGetValue(app.Tls.CertificateId.Value, out var certMeta))
-            {
-                _logger.LogWarning(
-                    "SNI selector: app '{AppName}' ({AppId}) references missing certificate {CertId}",
-                    app.Name,
-                    app.Id,
-                    app.Tls.CertificateId);
-                continue;
-            }
-
-            if (!loaded.TryGetValue(certMeta.Id, out var loadedCert))
-            {
-                var material = _certificates.GetMaterialAsync(certMeta.Id).GetAwaiter().GetResult();
-                if (material is null)
+                if (!certById.TryGetValue(app.Tls.CertificateId.Value, out var certMeta))
                 {
                     _logger.LogWarning(
-                        "SNI selector: certificate {CertId} ({CertName}) for app '{AppName}' ({AppId}) has no PEM material on disk",
-                        certMeta.Id,
-                        certMeta.Name,
+                        "SNI selector: app '{AppName}' ({AppId}) references missing certificate {CertId}",
                         app.Name,
-                        app.Id);
+                        app.Id,
+                        app.Tls.CertificateId);
                     continue;
                 }
 
-                try
+                if (!newLoaded.TryGetValue(certMeta.Id, out var entry))
                 {
-                    loadedCert = LoadX509(material);
-                    loaded[certMeta.Id] = loadedCert;
-                    _logger.LogDebug(
-                        "SNI selector: loaded cert {CertId} ({CertName}) thumbprint={Thumbprint} notAfter={NotAfter:o}",
-                        certMeta.Id,
-                        certMeta.Name,
-                        loadedCert.Thumbprint,
-                        loadedCert.NotAfter);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex,
-                        "SNI selector: failed to load cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
-                        certMeta.Id,
-                        certMeta.Name,
-                        app.Name,
-                        app.Id);
-                    continue;
-                }
-            }
-
-            foreach (var route in app.Routes)
-            {
-                foreach (var host in route.Hosts)
-                {
-                    if (!string.IsNullOrWhiteSpace(host))
+                    if (_loadedCerts.TryGetValue(certMeta.Id, out var cached)
+                        && string.Equals(cached.Thumbprint, certMeta.Thumbprint, StringComparison.OrdinalIgnoreCase))
                     {
-                        byHost[host] = loadedCert;
+                        // Cache hit — same cert id and same thumbprint. Skip the disk read + PEM parse.
+                        entry = cached;
+                        reused++;
                         _logger.LogDebug(
-                            "SNI selector: bound host '{Host}' → cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
-                            host,
+                            "SNI selector: reused cached cert {CertId} ({CertName}) thumbprint={Thumbprint}",
                             certMeta.Id,
                             certMeta.Name,
-                            app.Name,
-                            app.Id);
+                            cached.Thumbprint);
+                    }
+                    else
+                    {
+                        var loaded = TryLoadFresh(certMeta, app);
+                        if (loaded is null)
+                        {
+                            continue;
+                        }
+                        entry = loaded;
+                        fresh++;
+
+                        // Replacing a previously-cached version of the same cert id — defer-dispose
+                        // the prior instance so Schannel finishes in-flight handshakes against it.
+                        if (cached is not null)
+                        {
+                            ScheduleDeferredDispose(cached.Cert, $"replaced cert {certMeta.Id}");
+                        }
+                    }
+
+                    newLoaded[certMeta.Id] = entry;
+                }
+
+                foreach (var route in app.Routes)
+                {
+                    foreach (var host in route.Hosts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(host))
+                        {
+                            newByHost[host] = entry.Cert;
+                            _logger.LogDebug(
+                                "SNI selector: bound host '{Host}' → cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
+                                host,
+                                certMeta.Id,
+                                certMeta.Name,
+                                app.Name,
+                                app.Id);
+                        }
                     }
                 }
             }
-        }
 
-        lock (_lock)
+            // Identify orphans — cert ids in the previous cache that no app references anymore.
+            // Defer-dispose so any in-flight Schannel handshake completes.
+            var orphaned = 0;
+            foreach (var (id, cached) in _loadedCerts)
+            {
+                if (!newLoaded.ContainsKey(id))
+                {
+                    ScheduleDeferredDispose(cached.Cert, $"orphaned cert {id}");
+                    orphaned++;
+                }
+            }
+
+            // _loadedCerts is only touched under _reloadLock, no extra protection needed.
+            // _byHost is volatile — atomic reference swap publishes the new dict to lock-free readers.
+            _loadedCerts = newLoaded;
+            _byHost = newByHost;
+
+            _logger.LogInformation(
+                "SNI selector: reload complete — {HostCount} host binding(s), {CertCount} unique cert(s) ({Reused} reused, {Fresh} loaded from disk, {Orphaned} orphan(s) scheduled for disposal)",
+                newByHost.Count,
+                newLoaded.Count,
+                reused,
+                fresh,
+                orphaned);
+        }
+    }
+
+    private LoadedCert? TryLoadFresh(Certificate certMeta, Domain.Application app)
+    {
+        var material = _certificates.GetMaterialAsync(certMeta.Id).GetAwaiter().GetResult();
+        if (material is null)
         {
-            _loaded = loaded.Values.ToList();
-            _byHost = byHost;
+            _logger.LogWarning(
+                "SNI selector: certificate {CertId} ({CertName}) for app '{AppName}' ({AppId}) has no PEM material on disk",
+                certMeta.Id,
+                certMeta.Name,
+                app.Name,
+                app.Id);
+            return null;
         }
-        // Old X509Certificate2 instances are no longer referenced by _byHost or _loaded.
-        // Don't dispose eagerly — Schannel may still hold them for in-flight handshakes,
-        // and disposing under it produces "Cannot find the requested object" failures
-        // on the very next handshake. The finalizer reclaims native handles on GC.
 
-        _logger.LogInformation(
-            "SNI selector: reload complete — {HostCount} host binding(s), {CertCount} unique cert(s) loaded",
-            byHost.Count,
-            loaded.Count);
+        try
+        {
+            var x509 = LoadX509(material);
+            _logger.LogDebug(
+                "SNI selector: loaded cert {CertId} ({CertName}) thumbprint={Thumbprint} notAfter={NotAfter:o}",
+                certMeta.Id,
+                certMeta.Name,
+                x509.Thumbprint,
+                x509.NotAfter);
+            return new LoadedCert(x509, x509.Thumbprint);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "SNI selector: failed to load cert {CertId} ({CertName}) for app '{AppName}' ({AppId})",
+                certMeta.Id,
+                certMeta.Name,
+                app.Name,
+                app.Id);
+            return null;
+        }
+    }
+
+    private void ScheduleDeferredDispose(X509Certificate2 cert, string reason)
+    {
+        var ct = _disposeCts.Token;
+        _ = Task.Delay(DeferredDisposeDelay, _timeProvider, ct).ContinueWith(t =>
+        {
+            if (t.IsCanceled)
+            {
+                return;
+            }
+            try
+            {
+                cert.Dispose();
+                _logger.LogDebug("SNI selector: disposed deferred cert ({Reason})", reason);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "SNI selector: deferred dispose failed ({Reason})", reason);
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     private static X509Certificate2 LoadX509(CertificateMaterial material)
@@ -205,14 +287,21 @@ public sealed class SniCertificateSelector : IDisposable
     {
         _certSubscription?.Dispose();
         _appSubscription?.Dispose();
-        lock (_lock)
+        // Cancel pending deferred-dispose tasks before tearing down the cache.
+        try { _disposeCts.Cancel(); } catch (ObjectDisposedException) { }
+        lock (_reloadLock)
         {
-            foreach (var cert in _loaded)
+            foreach (var entry in _loadedCerts.Values)
             {
-                cert.Dispose();
+                try { entry.Cert.Dispose(); } catch { /* best-effort on shutdown */ }
             }
-            _loaded.Clear();
-            _byHost.Clear();
+            _loadedCerts.Clear();
+            // Replace _byHost with an empty dict (don't Clear the published one — a concurrent
+            // Select on another thread may still be reading it).
+            _byHost = new Dictionary<string, X509Certificate2>(StringComparer.OrdinalIgnoreCase);
         }
+        _disposeCts.Dispose();
     }
+
+    private sealed record LoadedCert(X509Certificate2 Cert, string Thumbprint);
 }

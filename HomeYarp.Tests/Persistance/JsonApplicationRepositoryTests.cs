@@ -210,4 +210,137 @@ public class JsonApplicationRepositoryTests
 
         fetched.ShouldNotBeNull();
     }
+
+    [Fact]
+    public async Task GetSnapshot_AfterAdd_ContainsNewItem()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var app = ApplicationFactory.Create(name: "snap");
+
+        await repo.AddAsync(app);
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(1);
+        snapshot.ById[app.Id].Name.ShouldBe("snap");
+        snapshot.ByName["snap"].Id.ShouldBe(app.Id);
+        snapshot.ByName["SNAP"].Id.ShouldBe(app.Id); // case-insensitive
+    }
+
+    [Fact]
+    public async Task GetSnapshot_AfterUpdate_ReflectsNewState()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var app = ApplicationFactory.Create(name: "x");
+        await repo.AddAsync(app);
+
+        app.DisplayName = "Renamed";
+        await repo.UpdateAsync(app);
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.ById[app.Id].DisplayName.ShouldBe("Renamed");
+    }
+
+    [Fact]
+    public async Task GetSnapshot_AfterRename_DropsOldNameBinding()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var app = ApplicationFactory.Create(name: "old");
+        await repo.AddAsync(app);
+
+        app.Name = "new";
+        await repo.UpdateAsync(app);
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.ByName.ContainsKey("old").ShouldBeFalse();
+        snapshot.ByName["new"].Id.ShouldBe(app.Id);
+    }
+
+    [Fact]
+    public async Task GetSnapshot_AfterDelete_OmitsItem()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var app = ApplicationFactory.Create(name: "x");
+        await repo.AddAsync(app);
+
+        await repo.DeleteAsync(app.Id);
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(0);
+        snapshot.ById.ContainsKey(app.Id).ShouldBeFalse();
+        snapshot.ByName.ContainsKey("x").ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task GetSnapshot_ReturnsSameInstanceUntilNextWrite()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        await repo.AddAsync(ApplicationFactory.Create(name: "x"));
+
+        var first = repo.GetSnapshot();
+        var second = repo.GetSnapshot();
+
+        // Identity equality — readers see a stable atomic reference between writes.
+        ReferenceEquals(first, second).ShouldBeTrue();
+
+        await repo.AddAsync(ApplicationFactory.Create(name: "y"));
+        var third = repo.GetSnapshot();
+        ReferenceEquals(first, third).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task GetSnapshot_ConcurrentReadsAndWrites_ReadersAlwaysSeeConsistentSnapshot()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        // Seed so readers always have something to inspect.
+        await repo.AddAsync(ApplicationFactory.Create(name: "seed"));
+
+        var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+        var writer = Task.Run(async () =>
+        {
+            var i = 0;
+            while (!stop.IsCancellationRequested)
+            {
+                var app = ApplicationFactory.Create(name: $"app-{i++}");
+                await repo.AddAsync(app);
+            }
+        });
+
+        var reader = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var snapshot = repo.GetSnapshot();
+                // Internal consistency: All length matches ById count, every All item is in ById.
+                snapshot.ById.Count.ShouldBe(snapshot.All.Length);
+                foreach (var item in snapshot.All)
+                {
+                    snapshot.ById.ContainsKey(item.Id).ShouldBeTrue();
+                }
+            }
+        });
+
+        await Task.WhenAll(writer, reader);
+    }
+
+    [Fact]
+    public async Task Constructor_LoadsExistingFilesIntoSnapshot()
+    {
+        using var dir = new TempDirectory();
+        // Seed via a first repo, then verify a fresh repo's GetSnapshot is populated synchronously
+        // (not lazy on first read).
+        var first = NewRepo(dir.Path);
+        await first.AddAsync(ApplicationFactory.Create(name: "preloaded"));
+
+        var second = NewRepo(dir.Path);
+        var snapshot = second.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(1);
+        snapshot.ByName["preloaded"].ShouldNotBeNull();
+    }
 }

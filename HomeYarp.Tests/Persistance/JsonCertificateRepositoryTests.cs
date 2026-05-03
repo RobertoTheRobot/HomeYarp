@@ -128,4 +128,73 @@ public class JsonCertificateRepositoryTests
 
         found.ShouldNotBeNull();
     }
+
+    [Fact]
+    public async Task GetSnapshot_AfterSave_ContainsNewItem()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var cert = ApplicationFactory.CreateSelfSignedCert("snap", new[] { "x.local" });
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
+
+        await repo.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(1);
+        snapshot.ById[cert.Id].Name.ShouldBe("snap");
+        snapshot.ByName["SNAP"].Id.ShouldBe(cert.Id);
+    }
+
+    [Fact]
+    public async Task GetSnapshot_AfterDelete_OmitsItem()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var cert = ApplicationFactory.CreateSelfSignedCert("x", new[] { "x.local" });
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
+        await repo.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
+
+        await repo.DeleteAsync(cert.Id);
+        var snapshot = repo.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(0);
+        snapshot.ById.ContainsKey(cert.Id).ShouldBeFalse();
+        snapshot.ByName.ContainsKey("x").ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task GetSnapshot_ReturnsSameInstanceUntilNextWrite()
+    {
+        using var dir = new TempDirectory();
+        var repo = NewRepo(dir.Path);
+        var cert = ApplicationFactory.CreateSelfSignedCert("x", new[] { "x.local" });
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
+        await repo.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
+
+        var first = repo.GetSnapshot();
+        var second = repo.GetSnapshot();
+        ReferenceEquals(first, second).ShouldBeTrue();
+
+        var another = ApplicationFactory.CreateSelfSignedCert("y", new[] { "y.local" });
+        var (cp2, kp2) = CertificateFactory.GenerateSelfSignedPem("y.local");
+        await repo.SaveAsync(another, new CertificateMaterial(cp2, kp2));
+        var third = repo.GetSnapshot();
+        ReferenceEquals(first, third).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task Constructor_LoadsExistingManifestsIntoSnapshot()
+    {
+        using var dir = new TempDirectory();
+        var first = NewRepo(dir.Path);
+        var cert = ApplicationFactory.CreateSelfSignedCert("preloaded", new[] { "x.local" });
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem("x.local");
+        await first.SaveAsync(cert, new CertificateMaterial(certPem, keyPem));
+
+        var second = NewRepo(dir.Path);
+        var snapshot = second.GetSnapshot();
+
+        snapshot.All.Length.ShouldBe(1);
+        snapshot.ByName["preloaded"].ShouldNotBeNull();
+    }
 }

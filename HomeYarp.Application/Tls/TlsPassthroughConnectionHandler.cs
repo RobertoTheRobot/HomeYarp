@@ -1,7 +1,5 @@
 using System.Buffers;
 using System.Net.Sockets;
-using HomeYarp.Application.Abstractions;
-using HomeYarp.Domain;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.Extensions.Logging;
 
@@ -9,14 +7,14 @@ namespace HomeYarp.Application.Tls;
 
 public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
 {
-    private readonly IApplicationRepository _applications;
+    private readonly PassthroughRouteTable _routes;
     private readonly ILogger<TlsPassthroughConnectionHandler> _logger;
 
     public TlsPassthroughConnectionHandler(
-        IApplicationRepository applications,
+        PassthroughRouteTable routes,
         ILogger<TlsPassthroughConnectionHandler> logger)
     {
-        _applications = applications;
+        _routes = routes;
         _logger = logger;
     }
 
@@ -38,8 +36,7 @@ public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
                 return;
             }
 
-            var app = await ResolveAppAsync(sni, ct);
-            if (app is null)
+            if (!_routes.TryResolve(sni, out var app))
             {
                 _logger.LogWarning(
                     "Passthrough connection {ConnectionId} from {Remote} aborted: no passthrough app matches SNI '{Sni}'",
@@ -137,31 +134,6 @@ public sealed class TlsPassthroughConnectionHandler : ConnectionHandler
             }
         }
         return (null, 0);
-    }
-
-    private async Task<HomeYarp.Domain.Application?> ResolveAppAsync(string sni, CancellationToken ct)
-    {
-        var apps = await _applications.GetAllAsync(ct);
-        return apps.FirstOrDefault(a =>
-            a.Enabled
-            && a.Tls.Mode == TlsMode.Passthrough
-            && a.Routes.Any(r => r.Hosts.Any(h => HostMatches(h, sni))));
-    }
-
-    private static bool HostMatches(string pattern, string sni)
-    {
-        if (string.Equals(pattern, sni, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (pattern.StartsWith("*.", StringComparison.Ordinal))
-        {
-            var suffix = pattern[1..];
-            return sni.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return false;
     }
 
     private static (string Host, int Port) ParseTcpTarget(string address)

@@ -1,7 +1,9 @@
+using System.Security.Cryptography.X509Certificates;
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Application.Tls;
 using HomeYarp.Tests.TestHelpers;
 using Microsoft.Extensions.Primitives;
+using Microsoft.Extensions.Time.Testing;
 
 namespace HomeYarp.Tests.Application.Tls;
 
@@ -15,8 +17,8 @@ public class SniCertificateSelectorTests
         // Default no-op change tokens unless overridden in a specific test.
         _certs.GetReloadToken().Returns(_ => NeverFiringToken());
         _apps.GetReloadToken().Returns(_ => NeverFiringToken());
-        _certs.GetAllAsync(Arg.Any<CancellationToken>()).Returns(Array.Empty<Certificate>());
-        _apps.GetAllAsync(Arg.Any<CancellationToken>()).Returns(Array.Empty<DomainApplication>());
+        _certs.WithCerts();
+        _apps.WithApps();
     }
 
     private static IChangeToken NeverFiringToken()
@@ -52,8 +54,8 @@ public class SniCertificateSelectorTests
             routeHosts: new[] { host },
             certificateId: certId);
 
-        _apps.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
-        _certs.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { cert });
+        _apps.WithApps(app);
+        _certs.WithCerts(cert);
         _certs.GetMaterialAsync(certId, Arg.Any<CancellationToken>())
               .Returns(new CertificateMaterial(certPem, keyPem));
     }
@@ -113,10 +115,205 @@ public class SniCertificateSelectorTests
 
         using var selector = new SniCertificateSelector(_certs, _apps);
 
-        _apps.Received().GetAllAsync(Arg.Any<CancellationToken>());
-        _certs.Received().GetAllAsync(Arg.Any<CancellationToken>());
+        _apps.Received().GetSnapshot();
+        _certs.Received().GetSnapshot();
         // And the freshly-loaded cert is selectable.
         selector.Select("ha.home.lan").ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void Reload_WhenCertThumbprintUnchanged_DoesNotReadMaterialAgain()
+    {
+        // Phase 2: cache by id+thumbprint. Second reload over the same cert metadata
+        // must not re-call GetMaterialAsync (the disk read + PEM→PFX roundtrip).
+        var (certs, apps, certId, _) = NewIsolatedSubstitutesWithSingleCert(out var appsCts);
+
+        using var selector = new SniCertificateSelector(certs, apps);
+        // Initial load read the material once.
+        certs.Received(1).GetMaterialAsync(certId, Arg.Any<CancellationToken>());
+
+        // Trigger a reload — same cert, same thumbprint.
+        FireApps(apps, ref appsCts);
+
+        // Cache hit — material was NOT read a second time.
+        certs.Received(1).GetMaterialAsync(certId, Arg.Any<CancellationToken>());
+        selector.Select("ha.home.lan").ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void Reload_WhenCertThumbprintChanges_ReadsMaterialAgain()
+    {
+        // Phase 2: a thumbprint change (renewal, regeneration, or upload of a different cert
+        // with the same id) must invalidate the cache and force a fresh disk read.
+        var (certs, apps, certId, host) = NewIsolatedSubstitutesWithSingleCert(out var appsCts);
+
+        using var selector = new SniCertificateSelector(certs, apps);
+        certs.Received(1).GetMaterialAsync(certId, Arg.Any<CancellationToken>());
+
+        // Same id, different actual cert (fresh keypair → fresh thumbprint) → simulates a renew/regen.
+        var (newCertPem, newKeyPem) = CertificateFactory.GenerateSelfSignedPem(host);
+        using var newX509 = X509Certificate2.CreateFromPem(newCertPem, newKeyPem);
+        var rotated = new Certificate
+        {
+            Id = certId,
+            Name = "test",
+            Thumbprint = newX509.Thumbprint,
+            SubjectAlternativeNames = new List<string> { host },
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-5),
+            NotAfter = DateTimeOffset.UtcNow.AddYears(1)
+        };
+        certs.WithCerts(rotated);
+        certs.GetMaterialAsync(certId, Arg.Any<CancellationToken>())
+             .Returns(new CertificateMaterial(newCertPem, newKeyPem));
+
+        FireApps(apps, ref appsCts);
+
+        // Material WAS read a second time because the cached thumbprint didn't match.
+        certs.Received(2).GetMaterialAsync(certId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void Reload_WhenAppRemoved_OrphanedCertNotImmediatelyDisposed()
+    {
+        // Phase 2 (deferred disposal): when a cert becomes orphaned (no app references it),
+        // it must NOT be disposed immediately — Schannel may still hold the reference for
+        // in-flight handshakes.
+        var time = new FakeTimeProvider();
+        var (certs, apps, _, _) = NewIsolatedSubstitutesWithSingleCert(out var appsCts);
+        // Keep the selector alive for the duration of the test (Dispose would cancel deferred timers).
+        var selector = new SniCertificateSelector(certs, apps, timeProvider: time);
+        _selectorsToKeepAlive.Add(selector);
+        var captured = selector.Select("ha.home.lan");
+        captured.ShouldNotBeNull();
+
+        // Remove the app — its cert becomes orphaned.
+        apps.WithApps();
+        FireApps(apps, ref appsCts);
+
+        // Cert handle still alive — disposal is deferred.
+        captured.Handle.ShouldNotBe(IntPtr.Zero);
+    }
+
+    [Fact]
+    public void Reload_WhenAppRemoved_OrphanedCertDisposedAfterDelay()
+    {
+        var time = new FakeTimeProvider();
+        var (certs, apps, _, _) = NewIsolatedSubstitutesWithSingleCert(out var appsCts);
+        var selector = new SniCertificateSelector(certs, apps, timeProvider: time);
+        _selectorsToKeepAlive.Add(selector);
+        var captured = selector.Select("ha.home.lan");
+        captured.ShouldNotBeNull();
+
+        apps.WithApps();
+        FireApps(apps, ref appsCts);
+
+        // Advance past the 60s deferred-dispose delay.
+        time.Advance(TimeSpan.FromSeconds(61));
+
+        captured.Handle.ShouldBe(IntPtr.Zero);
+    }
+
+    private readonly List<SniCertificateSelector> _selectorsToKeepAlive = new();
+
+    private static (ICertificateRepository Certs, IApplicationRepository Apps, Guid CertId, string Host) NewIsolatedSubstitutesWithSingleCert(
+        out CancellationTokenSource appsCts,
+        string host = "ha.home.lan")
+    {
+        // Fresh substitutes per test — avoids the constructor's NeverFiringToken setup,
+        // whose Returns(_ => Substitute.For<...>()) lambda interferes with rebinding GetReloadToken
+        // (NSubstitute disallows substitute creation inside an active Returns configuration).
+        var certs = Substitute.For<ICertificateRepository>();
+        var apps = Substitute.For<IApplicationRepository>();
+        var certId = Guid.NewGuid();
+        var (certPem, keyPem) = CertificateFactory.GenerateSelfSignedPem(host);
+        // Production code stores the actual cert thumbprint in the manifest (CertificateService.UploadAsync etc.)
+        // The selector's cache compares manifest.Thumbprint to the loaded X509's Thumbprint, so they must match.
+        using var probe = X509Certificate2.CreateFromPem(certPem, keyPem);
+        var cert = new Certificate
+        {
+            Id = certId,
+            Name = "test",
+            Thumbprint = probe.Thumbprint,
+            SubjectAlternativeNames = new List<string> { host },
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-5),
+            NotAfter = DateTimeOffset.UtcNow.AddYears(1)
+        };
+        var app = ApplicationFactory.Create(
+            tlsMode: TlsMode.Offload,
+            tlsSource: TlsCertificateSource.Manual,
+            routeHosts: new[] { host },
+            certificateId: certId);
+
+        appsCts = new CancellationTokenSource();
+        var capturedCts = appsCts;
+        apps.GetReloadToken().Returns(_ => new CancellationChangeToken(capturedCts.Token));
+        certs.GetReloadToken().Returns(_ => new CancellationChangeToken(new CancellationTokenSource().Token));
+        apps.WithApps(app);
+        certs.WithCerts(cert);
+        certs.GetMaterialAsync(certId, Arg.Any<CancellationToken>())
+             .Returns(new CertificateMaterial(certPem, keyPem));
+
+        return (certs, apps, certId, host);
+    }
+
+    private static void FireApps(IApplicationRepository apps, ref CancellationTokenSource cts)
+    {
+        var firing = cts;
+        cts = new CancellationTokenSource();
+        var captured = cts;
+        apps.GetReloadToken().Returns(_ => new CancellationChangeToken(captured.Token));
+        firing.Cancel();
+    }
+
+    [Fact]
+    public async Task Select_ParallelReadersDuringReload_NeverThrowAndAlwaysReturnConsistentSnapshot()
+    {
+        // Phase 3: Select is now lock-free (single volatile read of _byHost). Stress it with
+        // many concurrent handshake threads while the writer thread fires reload events.
+        // Acceptance: no exceptions; every non-null result is a real loaded cert (not a torn dict).
+        var (certs, apps, _, host) = NewIsolatedSubstitutesWithSingleCert(out var appsCts);
+        using var selector = new SniCertificateSelector(certs, apps);
+
+        using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+
+        var writer = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                FireApps(apps, ref appsCts);
+            }
+        });
+
+        const int readerCount = 8;
+        var readers = Enumerable.Range(0, readerCount).Select(i => Task.Run(() =>
+        {
+            var hits = 0;
+            var misses = 0;
+            while (!stop.IsCancellationRequested)
+            {
+                var result = selector.Select(host);
+                if (result is not null)
+                {
+                    // Touch the cert to verify it's a real, alive instance — would throw if torn.
+                    var probe = result.Thumbprint;
+                    hits++;
+                }
+                else
+                {
+                    misses++;
+                }
+            }
+            return (hits, misses);
+        })).ToArray();
+
+        await writer;
+        var results = await Task.WhenAll(readers);
+
+        // Sanity: every reader did at least *some* selects and didn't crash.
+        foreach (var (hits, misses) in results)
+        {
+            (hits + misses).ShouldBeGreaterThan(0);
+        }
     }
 
     [Fact]
@@ -144,8 +341,8 @@ public class SniCertificateSelectorTests
             tlsSource: TlsCertificateSource.Manual,
             routeHosts: new[] { "ha.home.lan" },
             certificateId: certId);
-        apps.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { app });
-        certs.GetAllAsync(Arg.Any<CancellationToken>()).Returns(new[] { cert });
+        apps.WithApps(app);
+        certs.WithCerts(cert);
 
         var materialCalls = 0;
         certs.GetMaterialAsync(certId, Arg.Any<CancellationToken>()).Returns(_ =>
