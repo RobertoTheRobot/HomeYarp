@@ -28,6 +28,12 @@ public static class HomeYarpKestrelConfiguration
 
         builder.WebHost.ConfigureKestrel(options =>
         {
+            // HomeYarp is a reverse proxy — gating proxied request bodies at Kestrel's 30 MB
+            // default produces spurious 413s on legitimate flows like Docker registry layer
+            // pushes. Backends decide their own limits. Override via Kestrel:Limits:MaxRequestBodySize
+            // in config if a cap is wanted.
+            options.Limits.MaxRequestBodySize = null;
+
             if (listeners.Http is int httpPort and > 0)
             {
                 options.ListenAnyIP(httpPort);

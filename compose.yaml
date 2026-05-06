@@ -33,12 +33,6 @@ services:
       DOTNET_ENVIRONMENT: Production
       ASPNETCORE_ENVIRONMENT: Production
 
-      # Lift Kestrel's 30 MB request-body cap so large proxied uploads (e.g. Docker
-      # registry layer pushes that often exceed 100 MB per layer) aren't 413-blocked
-      # at the HomeYarp edge. ConfigureKestrel doesn't set Limits, so the default
-      # 30,000,000-byte cap applies until this env var binds. 8 GB is plenty.
-      Kestrel__Limits__MaxRequestBodySize: "8589934592"
-
       # --- Management surface host filter ---
       # The UI + REST API + OpenAPI endpoints share listeners with the YARP proxy.
       # Without a filter, HomeYarp's pages outrank YARP's catch-all and take over
