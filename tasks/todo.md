@@ -1,3 +1,43 @@
+# MCP server — expose the management API as MCP tools
+
+## Goal
+
+Everything the REST API can do (`/api/applications` + `/api/certificates`) must be doable via MCP. Host the MCP server **in the same WebServer process** over Streamable HTTP (`ModelContextProtocol.AspNetCore`, `app.MapMcp("/mcp")`) so tools call the same scoped services (`IApplicationService`, `ICertificateService`, `IAcmeService`, `ISelfSignedCertificateService`) the controllers use — same validation, same auto-managed cert lifecycle, same change-token hot reload.
+
+## Design decisions
+
+- **HTTP transport, same process.** No separate stdio project — the management surface already lives here, DI is free, and any MCP client can point at `http://host:5268/mcp`. Subject to the same `HomeYarp:Management:Hosts` `RequireHost` filter as controllers.
+- **Reuse the existing DTOs + mappers** (`ApplicationRequest/Response`, `CertificateResponse`, etc. in `Dtos/`). The MCP surface stays in lockstep with the REST API by construction; the documented Advanced-fields limitation (transforms/healthCheck/httpRequest not in DTOs) applies identically.
+- **Tool classes in `HomeYarp.WebServer/Mcp/`** — `ApplicationTools` + `CertificateTools`, `[McpServerToolType]` with constructor injection (non-static), registered via `.WithTools<T>()` (explicit, no assembly scan). Every tool method and every parameter carries `[Description]`.
+- **Error mapping:** the controller's catch blocks translate to `McpException` — `ArgumentException` → "Validation failed: …", `KeyNotFoundException`/null → "not found", `InvalidOperationException` → conflict message. MCP clients see `isError` + message instead of HTTP status codes.
+- **Tool surface (14 tools, 1:1 with the REST surface):**
+  - Applications: `list_applications`, `get_application`, `create_application(request)`, `update_application(id, request)`, `delete_application(id)`
+  - Certificates: `list_certificates`, `get_certificate`, `download_certificate_pem` (returns the public PEM chain string), `upload_certificate`, `issue_self_signed_certificate`, `regenerate_certificate`, `issue_acme_certificate`, `renew_certificate`, `delete_certificate`
+- **Logging convention:** keep `{AppId}`/`{AppName}` (and `{CertId}`/`{CertName}`) structured properties, mirroring the controllers, prefixed "MCP …" instead of "API …".
+
+## Plan (checklist)
+
+- [x] Add `ModelContextProtocol.AspNetCore` package to `HomeYarp.WebServer.csproj`
+- [x] `Mcp/ApplicationTools.cs` — 5 tools wrapping `IApplicationService`
+- [x] `Mcp/CertificateTools.cs` — 9 tools wrapping `ICertificateService`/`IAcmeService`/`ISelfSignedCertificateService`
+- [x] `Program.cs` — `AddMcpServer().WithHttpTransport().WithTools<…>()`, `MapMcp("/mcp")` before `MapReverseProxy()`, apply management-host filter
+- [x] Tests: `HomeYarp.Tests/WebServer/Mcp/{ApplicationToolsTests,CertificateToolsTests}.cs` — NSubstitute mocks, Shouldly, mirroring the controller tests (happy path + error mapping per tool)
+- [x] `dotnet build` + `dotnet test` clean (baseline 214)
+- [x] Live smoke: `dotnet run` + MCP initialize/tools-list/tools-call against `/mcp`
+- [x] Docs: CLAUDE.md "MCP server" section + REST-surface note; README snippet
+
+## Review
+
+**Result: 251/251 tests passing (220 pre-existing + 31 new MCP tool tests). Live smoke against `http://localhost:5268/mcp` verified: initialize handshake (protocol 2025-06-18), tools/list returns all 14 tools, `tools/call list_applications` returns the real on-disk apps, and a not-found `get_application` surfaces as `isError: true` with the McpException message.**
+
+- Package: `ModelContextProtocol.AspNetCore 2.0.0-preview.1`. Its `McpException` in this version has no `McpErrorCode` overload — message-only ctor used throughout (the one anticipated deviation from the spec).
+- `HomeYarp.WebServer/Mcp/ApplicationTools.cs` + `CertificateTools.cs` — sealed, ctor-injected, `[McpServerToolType]`; reuse the REST DTOs/mappers unchanged; snake_case tool names; every method + parameter carries `[Description]`; structured logging mirrors the controllers ("MCP …" prefix, same `{AppId}`/`{AppName}`/`{CertId}`/`{CertName}` properties).
+- Wiring in `Program.cs`: `AddMcpServer().WithHttpTransport().WithTools<…>()` after `AddReverseProxy()`; `MapMcp("/mcp")` next to the controllers/razor mapping, before `MapReverseProxy()`, with the same `HomeYarp:Management:Hosts` `RequireHost` filter.
+- Drive-by fix: `SniCertificateSelectorTests.Select_ParallelReadersDuringReload…` (from commit 93a0757) flaked when the 400 ms stop timer fired before any reader task got scheduled (`hits + misses = 0`); reader loop switched `while` → `do…while` so every reader completes at least one `Select`.
+- Follow-up (pre-existing, unrelated): NU1903 warning — transitive `Microsoft.OpenApi 2.0.0` (via `Microsoft.AspNetCore.OpenApi 10.0.6`) has a known high-severity advisory; bump when a patched version ships.
+
+---
+
 # Performance pass — snapshot repos + passthrough route table (and what to do after)
 
 ## Scope of this plan

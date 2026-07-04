@@ -120,6 +120,30 @@ The editor's Save button parses the JSON, validates via the same service path th
 
 > The advanced fields (`transforms`, `healthCheck`, `httpRequest`) are not exposed by `POST /api/applications` — the REST DTOs only carry the simple-form fields. The JSON editor goes through the in-process service and is the supported way to set them.
 
+## MCP server
+
+HomeYarp exposes its entire management API as 14 [Model Context Protocol](https://modelcontextprotocol.io/) tools, served over Streamable HTTP at `/mcp` in the same process as the REST API and Blazor UI. You can point an MCP-compatible AI client (Claude Desktop, Cursor, etc.) at it to manage applications and certificates via natural language.
+
+**Tools available:** `list_applications`, `get_application`, `create_application`, `update_application`, `delete_application`, `list_certificates`, `get_certificate`, `download_certificate_pem`, `upload_certificate`, `issue_self_signed_certificate`, `regenerate_certificate`, `issue_acme_certificate`, `renew_certificate`, `delete_certificate`.
+
+All tools use the same DTOs and validation as the REST API — the same advanced-fields limitation (transforms / healthCheck / httpRequest are not in the DTOs) applies.
+
+### Claude Desktop config
+
+Add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "homeyarp": {
+      "url": "http://localhost:5268/mcp"
+    }
+  }
+}
+```
+
+If you've configured `HomeYarp:Management:Hosts`, the MCP endpoint is restricted to the same host list as the REST API.
+
 ## Enabling TLS
 
 ### Offload (proxy terminates TLS)

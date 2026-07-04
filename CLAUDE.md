@@ -31,7 +31,7 @@ Clean Architecture targeting .NET 10, four production projects plus a test proje
 - **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, advanced types (`RouteTransform`, `HealthCheckConfiguration` + `Active`/`Passive`, `HttpRequestConfiguration`), and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
 - **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` (now also owns auto-managed cert lifecycle for Internal/External sources) and `CertificateService` (also exposes `GetCertificatePemAsync(id)` so the WebServer's download endpoint can serve the public PEM without a private key), `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), the `Tls/` namespace (`SniCertificateSelector` — cert callback Kestrel invokes during HTTPS handshake; `TlsPassthroughConnectionHandler` — Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes; `TlsClientHelloParser`), the `Acme/` namespace (`AcmeService`, `AcmeRenewalService`, `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeOptionsValidator`), and the `SelfSigned/` namespace (`ISelfSignedCertificateService`, `SelfSignedCertificateService`, `SelfSignedRenewalService`). References `Yarp.ReverseProxy`. Depends on Domain only.
 - **HomeYarp.Persistance** — `JsonApplicationRepository` stores one file per app at `{DataRoot}/applications/{id}.json` with atomic temp-file rename writes and an in-memory cache. `JsonCertificateRepository` mirrors that pattern with `{DataRoot}/certificates/{id}.json` (manifest) + `{id}.cert.pem` + `{id}.key.pem`. `HomeYarpDbContext` is a thin façade exposing both repos. `JsonStoreOptions` is bound from `HomeYarp:Storage`. Depends on Application + Domain.
-- **HomeYarp.WebServer** — Composition root. `Program.cs` boots **Serilog** (two-stage: bootstrap logger → `UseSerilog(ReadFrom.Configuration)` → `UseSerilogRequestLogging`), calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`. See the **Logging** section for the sink configuration and the `{AppId}`/`{AppName}` convention.
+- **HomeYarp.WebServer** — Composition root. `Program.cs` boots **Serilog** (two-stage: bootstrap logger → `UseSerilog(ReadFrom.Configuration)` → `UseSerilogRequestLogging`), calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + `AddMcpServer()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapMcp("/mcp")` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`. MCP tools in `Mcp/` (`ApplicationTools`, `CertificateTools`). See the **Logging** section for the sink configuration and the `{AppId}`/`{AppName}` convention.
 - **HomeYarp.Tests** — xUnit v3 + Microsoft.Testing.Platform unit-test project covering all four production projects. Folder layout mirrors the source tree. References all four production projects; `HomeYarp.Application` declares `<InternalsVisibleTo Include="HomeYarp.Tests" />` so internals like `TlsClientHelloParser` are reachable. See the **Testing** section below.
 
 Blazor surface (interactive server, no separate WASM project):
@@ -123,6 +123,33 @@ POST /api/certificates/acme
 ```
 
 Conflict (`409`) is returned when the `name` collides. Validation problems (`400`) come from `ApplicationService.Validate` (see below), `SelfSignedCertificateService` (empty hostnames, non-positive validity), `AcmeService.IssueAsync` (empty hostnames, wildcards), or `X509Certificate2.CreateFromPem` failures during manual upload.
+
+## MCP server
+
+HomeYarp exposes its full management API as MCP tools over Streamable HTTP at `/mcp`, hosted in the same process as the REST API and Blazor UI. The same management-host filter that restricts `/api/*` applies to `/mcp` (see `HomeYarp:Management:Hosts`).
+
+**Package:** `ModelContextProtocol.AspNetCore` (preview). Wired in `Program.cs` via `AddMcpServer().WithHttpTransport().WithTools<ApplicationTools>().WithTools<CertificateTools>()` and mapped with `app.MapMcp("/mcp")`.
+
+**Tool classes** live in `HomeYarp.WebServer/Mcp/`:
+- `ApplicationTools` — 5 tools: `list_applications`, `get_application`, `create_application`, `update_application`, `delete_application`.
+- `CertificateTools` — 9 tools: `list_certificates`, `get_certificate`, `download_certificate_pem`, `upload_certificate`, `issue_self_signed_certificate`, `regenerate_certificate`, `issue_acme_certificate`, `renew_certificate`, `delete_certificate`.
+
+Both classes reuse the existing DTOs and mappers from `Dtos/` — the same shapes as the REST API.
+
+**Error mapping** (instead of HTTP status codes): `McpException` is thrown — not-found cases get `"... '{id}' was not found."`, `ArgumentException` maps to `"Validation failed: {message}"`, and `InvalidOperationException` passes its message through unchanged (conflict / ACME-not-configured).
+
+**Advanced-fields limitation:** the `ApplicationRequest` / `ApplicationResponse` DTOs don't carry `routes[].transforms`, `cluster.healthCheck`, or `cluster.httpRequest` — same limitation as the REST API. Set those via the Blazor JSON editor which bypasses the DTOs and calls the service directly.
+
+**Sample Claude Desktop config:**
+```json
+{
+  "mcpServers": {
+    "homeyarp": {
+      "url": "http://localhost:5268/mcp"
+    }
+  }
+}
+```
 
 ## Validation rules
 

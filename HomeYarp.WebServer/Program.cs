@@ -3,6 +3,8 @@ using HomeYarp.Application.Acme;
 using HomeYarp.Persistance;
 using HomeYarp.WebServer;
 using HomeYarp.WebServer.Components;
+using HomeYarp.WebServer.Mcp;
+using ModelContextProtocol.Server;
 using MudBlazor.Services;
 using Serilog;
 using Serilog.Events;
@@ -44,6 +46,12 @@ try
         .AddHomeYarpApplication(builder.Configuration);
 
     builder.Services.AddReverseProxy();
+
+    // MCP server: exposes the full management API as MCP tools over Streamable HTTP at /mcp.
+    builder.Services.AddMcpServer()
+        .WithHttpTransport()
+        .WithTools<ApplicationTools>()
+        .WithTools<CertificateTools>();
 
     var app = builder.Build();
 
@@ -92,10 +100,13 @@ try
 
     var controllers = app.MapControllers();
     var razor = app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+    // MCP endpoint mirrors the REST API — same management-host restriction applies.
+    var mcp = app.MapMcp("/mcp");
     if (managementHosts.Length > 0)
     {
         controllers.RequireHost(managementHosts);
         razor.RequireHost(managementHosts);
+        mcp.RequireHost(managementHosts);
         Log.Information("Management surface restricted to hosts: {Hosts}", managementHosts);
     }
 

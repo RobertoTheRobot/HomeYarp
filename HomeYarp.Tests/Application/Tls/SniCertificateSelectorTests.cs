@@ -289,7 +289,11 @@ public class SniCertificateSelectorTests
         {
             var hits = 0;
             var misses = 0;
-            while (!stop.IsCancellationRequested)
+            // Use do/while so each reader completes at least one Select call regardless of
+            // how the timer and thread scheduler interleave — the timer may fire before
+            // a reader task gets scheduled on this machine, leaving hits+misses=0 if
+            // we checked the token first.
+            do
             {
                 var result = selector.Select(host);
                 if (result is not null)
@@ -303,6 +307,7 @@ public class SniCertificateSelectorTests
                     misses++;
                 }
             }
+            while (!stop.IsCancellationRequested);
             return (hits, misses);
         })).ToArray();
 
