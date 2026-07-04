@@ -5,7 +5,7 @@ A YARP-based reverse proxy with a built-in REST API and Blazor UI for managing a
 ## What it does
 
 - Reverse proxies HTTP and HTTPS traffic to backend services using [YARP](https://microsoft.github.io/reverse-proxy/).
-- Lets you define **applications** (name + frontend routes + backend cluster) via a REST API or a Blazor UI.
+- Lets you define **applications** (name + frontend routes + backend cluster) via a REST API, a Blazor UI, or an **MCP server** — every management operation is exposed as a [Model Context Protocol](https://modelcontextprotocol.io/) tool so AI agents can drive the proxy (see [MCP server](#mcp-server)).
 - Persists everything as JSON files on disk (one file per app, one PEM pair + manifest per certificate).
 - Hot-reloads route, cluster, and certificate changes without restarting — `IChangeToken` plumbing rebuilds the YARP snapshot and the SNI certificate cache on every mutation.
 - Supports two per-application TLS modes:
@@ -32,7 +32,7 @@ dotnet run --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 
 Defaults in development:
 
-- `http://localhost:5268` — UI, management API, plain HTTP proxy
+- `http://localhost:5268` — UI, management API, MCP endpoint (`/mcp`), plain HTTP proxy
 - `https://localhost:5443` — HTTPS offload (TLS terminated by HomeYarp)
 - TCP `localhost:5444` — HTTPS passthrough (raw L4 tunnel; speak TLS to it as if it were the backend)
 
@@ -122,27 +122,56 @@ The editor's Save button parses the JSON, validates via the same service path th
 
 ## MCP server
 
-HomeYarp exposes its entire management API as 14 [Model Context Protocol](https://modelcontextprotocol.io/) tools, served over Streamable HTTP at `/mcp` in the same process as the REST API and Blazor UI. You can point an MCP-compatible AI client (Claude Desktop, Cursor, etc.) at it to manage applications and certificates via natural language.
+HomeYarp exposes its entire management API as 14 [Model Context Protocol](https://modelcontextprotocol.io/) tools, served over Streamable HTTP at `/mcp` on the HTTP listener — same process as the REST API and Blazor UI. Point an MCP-compatible AI client at it and manage applications and certificates via natural language ("create a passthrough app for Home Assistant at 192.168.1.50", "which certs expire this month?", "renew the cloud cert now").
 
-**Tools available:** `list_applications`, `get_application`, `create_application`, `update_application`, `delete_application`, `list_certificates`, `get_certificate`, `download_certificate_pem`, `upload_certificate`, `issue_self_signed_certificate`, `regenerate_certificate`, `issue_acme_certificate`, `renew_certificate`, `delete_certificate`.
+| Tool | Mirrors |
+|---|---|
+| `list_applications`, `get_application` | `GET /api/applications[/{id}]` |
+| `create_application`, `update_application`, `delete_application` | `POST` / `PUT` / `DELETE /api/applications` |
+| `list_certificates`, `get_certificate` | `GET /api/certificates[/{id}]` |
+| `download_certificate_pem` | `GET /api/certificates/{id}/download` (public chain, no private key) |
+| `upload_certificate` | `POST /api/certificates` |
+| `issue_self_signed_certificate`, `regenerate_certificate` | `POST /api/certificates/self-signed`, `POST /api/certificates/{id}/regenerate` |
+| `issue_acme_certificate`, `renew_certificate` | `POST /api/certificates/acme`, `POST /api/certificates/{id}/renew` |
+| `delete_certificate` | `DELETE /api/certificates/{id}` |
 
-All tools use the same DTOs and validation as the REST API — the same advanced-fields limitation (transforms / healthCheck / httpRequest are not in the DTOs) applies.
+The tools call the same in-process services as the REST controllers, so name uniqueness, TLS validation, ACME gating, the auto-managed cert lifecycle, and hot reload all behave identically. Failures come back as MCP tool errors with the underlying message ("Validation failed: …", "…was not found.", name-conflict text) instead of HTTP status codes. The same advanced-fields limitation as the REST API applies (transforms / healthCheck / httpRequest are not in the DTOs — use the Blazor JSON editor for those).
 
-### Claude Desktop config
+### Connecting a client
 
-Add this to your `claude_desktop_config.json`:
+**Claude Code:**
+
+```bash
+claude mcp add --transport http homeyarp http://localhost:5268/mcp
+```
+
+**Any client that reads an `mcp.json`-style config** (Claude Code project `.mcp.json`, VS Code, Cursor):
 
 ```json
 {
   "mcpServers": {
     "homeyarp": {
+      "type": "http",
       "url": "http://localhost:5268/mcp"
     }
   }
 }
 ```
 
-If you've configured `HomeYarp:Management:Hosts`, the MCP endpoint is restricted to the same host list as the REST API.
+**Claude Desktop** doesn't take remote HTTP servers in `claude_desktop_config.json` directly — add it as a custom connector (Settings → Connectors → Add custom connector, URL `http://<host>:5268/mcp`), or bridge it through [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "homeyarp": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://localhost:5268/mcp"]
+    }
+  }
+}
+```
+
+> **No authentication.** Like the REST API and UI, the MCP endpoint is unauthenticated — expose it on a trusted network only. If you've configured `HomeYarp:Management:Hosts`, `/mcp` is restricted to the same host list as the rest of the management surface.
 
 ## Enabling TLS
 
@@ -572,7 +601,7 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
 - `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`, plus advanced types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`).
 - `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
 - `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
-- `HomeYarp.WebServer` — composition root: REST controllers, Blazor Server pages, Kestrel listener configuration, the `/.well-known/acme-challenge/{token}` endpoint, and the **Serilog** logging pipeline (Console default; File and Seq sinks available on demand).
+- `HomeYarp.WebServer` — composition root: REST controllers, MCP tool classes (`Mcp/`) with the Streamable HTTP endpoint at `/mcp`, Blazor Server pages, Kestrel listener configuration, the `/.well-known/acme-challenge/{token}` endpoint, and the **Serilog** logging pipeline (Console default; File and Seq sinks available on demand).
 - `HomeYarp.Tests` — xUnit v3 unit tests covering all four production projects. See [Testing](#testing).
 
 See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifetimes, validation rules, and design decisions.
@@ -580,7 +609,7 @@ See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifet
 ## Limitations / not yet
 
 - **Private keys are stored unencrypted on disk** (including the ACME account key). Acceptable for a home lab; encryption at rest is a planned follow-up.
-- **No authentication on the management API or UI.** Run it on a trusted network only. Auth on top of the management surface is also a planned follow-up.
+- **No authentication on the management API, UI, or MCP endpoint.** Run it on a trusted network only. Auth on top of the management surface is also a planned follow-up.
 - **`AuthorizationPolicy` on `Application` is a placeholder field.** Per-route ASP.NET Core authorization policies are not wired yet.
 - **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for self-signed wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
 - **Hostname changes on `External`-managed apps are rejected.** v1 only re-issues with the original hostnames; to change them, switch to `Manual` (or `Internal`), or delete and recreate. Self-signed (`Internal`) regenerates in place on hostname change.

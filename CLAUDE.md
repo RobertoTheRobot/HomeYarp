@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-HomeYarp is a YARP-based reverse proxy for a home lab. The `HomeYarp.WebServer` project hosts the proxy (via `MapReverseProxy()`), a REST management API at `/api/applications` + `/api/certificates`, and a Blazor Server UI for managing apps, certificates, and settings — all in one process. Application definitions and certificates are persisted as JSON + PEM files on disk; a custom `IProxyConfigProvider` translates them to YARP `RouteConfig`/`ClusterConfig` and hot-reloads via `IChangeToken` whenever state changes. TLS is supported per-application: offload (proxy terminates) or true L4 passthrough (raw TCP tunnel via SNI peek). Certificates have three sources — manual upload, self-signed (HomeYarp generates), and ACME (Let's Encrypt) — and the application's `Tls.Source` toggle (`Manual | Internal | External`) lets the app service own the cert lifecycle automatically.
+HomeYarp is a YARP-based reverse proxy for a home lab. The `HomeYarp.WebServer` project hosts the proxy (via `MapReverseProxy()`), a REST management API at `/api/applications` + `/api/certificates`, an MCP server at `/mcp` mirroring that API as tools, and a Blazor Server UI for managing apps, certificates, and settings — all in one process. Application definitions and certificates are persisted as JSON + PEM files on disk; a custom `IProxyConfigProvider` translates them to YARP `RouteConfig`/`ClusterConfig` and hot-reloads via `IChangeToken` whenever state changes. TLS is supported per-application: offload (proxy terminates) or true L4 passthrough (raw TCP tunnel via SNI peek). Certificates have three sources — manual upload, self-signed (HomeYarp generates), and ACME (Let's Encrypt) — and the application's `Tls.Source` toggle (`Manual | Internal | External`) lets the app service own the cert lifecycle automatically.
 
 ## Commands
 
@@ -128,28 +128,19 @@ Conflict (`409`) is returned when the `name` collides. Validation problems (`400
 
 HomeYarp exposes its full management API as MCP tools over Streamable HTTP at `/mcp`, hosted in the same process as the REST API and Blazor UI. The same management-host filter that restricts `/api/*` applies to `/mcp` (see `HomeYarp:Management:Hosts`).
 
-**Package:** `ModelContextProtocol.AspNetCore` (preview). Wired in `Program.cs` via `AddMcpServer().WithHttpTransport().WithTools<ApplicationTools>().WithTools<CertificateTools>()` and mapped with `app.MapMcp("/mcp")`.
+**Package:** `ModelContextProtocol.AspNetCore` `2.0.0-preview.1`. Wired in `Program.cs` via `AddMcpServer().WithHttpTransport().WithTools<ApplicationTools>().WithTools<CertificateTools>()` (explicit registration, no assembly scan) and mapped with `app.MapMcp("/mcp")` alongside the controllers — before `MapReverseProxy()` so the literal endpoint wins over YARP's catch-all. Preview-package gotcha: this version's `McpException` has a message-only constructor (no `McpErrorCode` overload) — if the package is bumped and gains error codes, the tool classes are the place to adopt them.
 
 **Tool classes** live in `HomeYarp.WebServer/Mcp/`:
 - `ApplicationTools` — 5 tools: `list_applications`, `get_application`, `create_application`, `update_application`, `delete_application`.
 - `CertificateTools` — 9 tools: `list_certificates`, `get_certificate`, `download_certificate_pem`, `upload_certificate`, `issue_self_signed_certificate`, `regenerate_certificate`, `issue_acme_certificate`, `renew_certificate`, `delete_certificate`.
 
-Both classes reuse the existing DTOs and mappers from `Dtos/` — the same shapes as the REST API.
+Both classes are sealed, constructor-injected (scoped services + non-nullable `ILogger<T>`), and reuse the existing DTOs and mappers from `Dtos/` — the same shapes as the REST API, so the two surfaces stay in lockstep by construction. Tool names are explicit snake_case via `[McpServerTool(Name = "...")]`; every method and parameter carries `[Description]`. Logging mirrors the controllers' structured properties (`{AppId}`/`{AppName}`, `{CertId}`/`{CertName}`) with an "MCP" message prefix instead of "API". Tests live in `HomeYarp.Tests/WebServer/Mcp/`, mirroring the controller tests (happy path + every error branch asserted via `Should.ThrowAsync<McpException>`).
 
 **Error mapping** (instead of HTTP status codes): `McpException` is thrown — not-found cases get `"... '{id}' was not found."`, `ArgumentException` maps to `"Validation failed: {message}"`, and `InvalidOperationException` passes its message through unchanged (conflict / ACME-not-configured).
 
 **Advanced-fields limitation:** the `ApplicationRequest` / `ApplicationResponse` DTOs don't carry `routes[].transforms`, `cluster.healthCheck`, or `cluster.httpRequest` — same limitation as the REST API. Set those via the Blazor JSON editor which bypasses the DTOs and calls the service directly.
 
-**Sample Claude Desktop config:**
-```json
-{
-  "mcpServers": {
-    "homeyarp": {
-      "url": "http://localhost:5268/mcp"
-    }
-  }
-}
-```
+**Connecting a client:** `claude mcp add --transport http homeyarp http://localhost:5268/mcp` (Claude Code), or an `mcp.json`-style entry with `"type": "http", "url": "http://localhost:5268/mcp"`. Claude Desktop needs a custom connector or an `mcp-remote` bridge — it doesn't take remote HTTP URLs in `claude_desktop_config.json` directly. See the README's "MCP server" section for copy-paste snippets. Like the rest of the management surface, `/mcp` is unauthenticated — trusted networks only.
 
 ## Validation rules
 
@@ -339,6 +330,7 @@ dotnet test --solution HomeYarp.WebServer.slnx
 - Live ACME orchestration in `AcmeService.OrchestrateOrderAsync` — Certes drives real Let's Encrypt traffic. Unit tests cover the gating paths only (input validation, name uniqueness, "renew on a non-ACME cert", `EnsureConfigured` wiring).
 - `TlsPassthroughConnectionHandler.OnConnectedAsync` end-to-end TCP pumping. The static `HostMatches` and `ParseTcpTarget` helpers are private — they would need promotion to internal to be unit-testable.
 - Full Kestrel-in-process tests (`WebApplicationFactory`) of the proxy pipeline.
+- MCP protocol round-trips (initialize / tools-list / tools-call over Streamable HTTP against `/mcp`). Unit tests cover the tool classes directly; the protocol layer is the SDK's responsibility.
 
 ## Local data
 
