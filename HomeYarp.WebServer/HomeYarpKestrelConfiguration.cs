@@ -14,14 +14,16 @@ public static class HomeYarpKestrelConfiguration
         var listeners = builder.Configuration.GetSection(ListenerOptions.SectionName).Get<ListenerOptions>() ?? new ListenerOptions();
 
         Log.Information(
-            "Kestrel listener config: Http={Http} HttpsOffload={HttpsOffload} HttpsPassthrough={HttpsPassthrough}",
+            "Kestrel listener config: Http={Http} HttpsOffload={HttpsOffload} HttpsPassthrough={HttpsPassthrough} Management={Management}",
             listeners.Http,
             listeners.HttpsOffload,
-            listeners.HttpsPassthrough);
+            listeners.HttpsPassthrough,
+            listeners.Management);
 
         if (listeners.Http is null or 0
             && listeners.HttpsOffload is null or 0
-            && listeners.HttpsPassthrough is null or 0)
+            && listeners.HttpsPassthrough is null or 0
+            && listeners.Management is null or 0)
         {
             Log.Warning("All HomeYarp listeners are disabled — no inbound traffic will be accepted");
         }
@@ -63,6 +65,16 @@ public static class HomeYarpKestrelConfiguration
                     listenOptions.UseConnectionHandler<TlsPassthroughConnectionHandler>();
                 });
                 Log.Information("Listening for HTTPS-passthrough (raw L4 + SNI peek) on port {Port}", passthroughPort);
+            }
+
+            // Dedicated management listener. Binding AnyIP inside a container is intentional —
+            // the LAN-only boundary is enforced by publishing this port only where trusted
+            // (docker port publish + firewall not forwarding it), which is more portable than
+            // binding a specific interface from inside the container's network namespace.
+            if (listeners.Management is int managementPort and > 0)
+            {
+                options.ListenAnyIP(managementPort);
+                Log.Information("Listening for MANAGEMENT (UI/API/MCP) on port {Port}", managementPort);
             }
         });
 

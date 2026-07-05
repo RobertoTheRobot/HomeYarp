@@ -12,7 +12,7 @@ HomeYarp is a YARP-based reverse proxy for a home lab. The `HomeYarp.WebServer` 
 # Build
 dotnet build HomeYarp.WebServer.slnx
 
-# Run the API + proxy (http://localhost:5268)
+# Run the proxy (public listener http://localhost:5268; management UI/API/MCP on http://localhost:5269)
 dotnet run --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 
 # Run with watch (hot reload)
@@ -31,7 +31,7 @@ Clean Architecture targeting .NET 10, four production projects plus a test proje
 - **HomeYarp.Domain** — Aggregates: `Application` (with `Routes`, `Cluster`, `Tls`) and `Certificate` (with optional `Acme` or `SelfSigned` metadata block — at most one is set; both null ⇒ manually uploaded). Plus `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration` (`Mode`, `CertificateId`, `Source`), `AcmeMetadata`, `SelfSignedMetadata`, advanced types (`RouteTransform`, `HealthCheckConfiguration` + `Active`/`Passive`, `HttpRequestConfiguration`), and the enums `TlsMode` (`None | Offload | Passthrough`), `TlsCertificateSource` (`Manual | Internal | External`), `AcmeKeyType`, `CertificateKeyType` (parallel `Ec256/Rsa2048` enums for the two cert sources). No dependencies.
 - **HomeYarp.Application** — Use cases, YARP bridge, and TLS routing. Holds `IApplicationRepository` + `ICertificateRepository` (in `Abstractions/`), `ApplicationService` (now also owns auto-managed cert lifecycle for Internal/External sources) and `CertificateService` (also exposes `GetCertificatePemAsync(id)` so the WebServer's download endpoint can serve the public PEM without a private key), `HomeYarpConfigProvider` (the YARP `IProxyConfigProvider`), the `Tls/` namespace (`SniCertificateSelector` — cert callback Kestrel invokes during HTTPS handshake; `TlsPassthroughConnectionHandler` — Kestrel `ConnectionHandler` that peeks the TLS ClientHello SNI and tunnels raw bytes; `TlsClientHelloParser`), the `Acme/` namespace (`AcmeService`, `AcmeRenewalService`, `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeOptionsValidator`), and the `SelfSigned/` namespace (`ISelfSignedCertificateService`, `SelfSignedCertificateService`, `SelfSignedRenewalService`). References `Yarp.ReverseProxy`. Depends on Domain only.
 - **HomeYarp.Persistance** — `JsonApplicationRepository` stores one file per app at `{DataRoot}/applications/{id}.json` with atomic temp-file rename writes and an in-memory cache. `JsonCertificateRepository` mirrors that pattern with `{DataRoot}/certificates/{id}.json` (manifest) + `{id}.cert.pem` + `{id}.key.pem`. `HomeYarpDbContext` is a thin façade exposing both repos. `JsonStoreOptions` is bound from `HomeYarp:Storage`. Depends on Application + Domain.
-- **HomeYarp.WebServer** — Composition root. `Program.cs` boots **Serilog** (two-stage: bootstrap logger → `UseSerilog(ReadFrom.Configuration)` → `UseSerilogRequestLogging`), calls `ConfigureHomeYarpKestrel()` (binds the three listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + `AddMcpServer()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapMcp("/mcp")` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`. MCP tools in `Mcp/` (`ApplicationTools`, `CertificateTools`). See the **Logging** section for the sink configuration and the `{AppId}`/`{AppName}` convention.
+- **HomeYarp.WebServer** — Composition root. `Program.cs` boots **Serilog** (two-stage: bootstrap logger → `UseSerilog(ReadFrom.Configuration)` → `UseSerilogRequestLogging`), calls `ConfigureHomeYarpKestrel()` (binds the four listeners from `HomeYarp:Listeners`) then wires `AddHomeYarpPersistance` → `AddHomeYarpApplication` → `AddReverseProxy()` + `AddMcpServer()` + Razor Components, and pipes `MapControllers()` + `MapRazorComponents<App>()` + `MapMcp("/mcp")` + `MapReverseProxy()`. Controllers: `ApplicationsController`, `CertificatesController`. DTOs in `Dtos/`. MCP tools in `Mcp/` (`ApplicationTools`, `CertificateTools`). See the **Logging** section for the sink configuration and the `{AppId}`/`{AppName}` convention.
 - **HomeYarp.Tests** — xUnit v3 + Microsoft.Testing.Platform unit-test project covering all four production projects. Folder layout mirrors the source tree. References all four production projects; `HomeYarp.Application` declares `<InternalsVisibleTo Include="HomeYarp.Tests" />` so internals like `TlsClientHelloParser` are reachable. See the **Testing** section below.
 
 Blazor surface (interactive server, no separate WASM project):
@@ -126,7 +126,7 @@ Conflict (`409`) is returned when the `name` collides. Validation problems (`400
 
 ## MCP server
 
-HomeYarp exposes its full management API as MCP tools over Streamable HTTP at `/mcp`, hosted in the same process as the REST API and Blazor UI. The same management-host filter that restricts `/api/*` applies to `/mcp` (see `HomeYarp:Management:Hosts`).
+HomeYarp exposes its full management API as MCP tools over Streamable HTTP at `/mcp`, hosted in the same process as the REST API and Blazor UI. The same management gates that restrict `/api/*` apply to `/mcp`: the local-port gate (`HomeYarp:Listeners:Management` — see the Listeners section) and, optionally, the `HomeYarp:Management:Hosts` allowlist.
 
 **Package:** `ModelContextProtocol.AspNetCore` `2.0.0-preview.1`. Wired in `Program.cs` via `AddMcpServer().WithHttpTransport().WithTools<ApplicationTools>().WithTools<CertificateTools>()` (explicit registration, no assembly scan) and mapped with `app.MapMcp("/mcp")` alongside the controllers — before `MapReverseProxy()` so the literal endpoint wins over YARP's catch-all. Preview-package gotcha: this version's `McpException` has a message-only constructor (no `McpErrorCode` overload) — if the package is bumped and gains error codes, the tool classes are the place to adopt them.
 
@@ -140,7 +140,7 @@ Both classes are sealed, constructor-injected (scoped services + non-nullable `I
 
 **Advanced-fields limitation:** the `ApplicationRequest` / `ApplicationResponse` DTOs don't carry `routes[].transforms`, `cluster.healthCheck`, or `cluster.httpRequest` — same limitation as the REST API. Set those via the Blazor JSON editor which bypasses the DTOs and calls the service directly.
 
-**Connecting a client:** `claude mcp add --transport http homeyarp http://localhost:5268/mcp` (Claude Code), or an `mcp.json`-style entry with `"type": "http", "url": "http://localhost:5268/mcp"`. Claude Desktop needs a custom connector or an `mcp-remote` bridge — it doesn't take remote HTTP URLs in `claude_desktop_config.json` directly. See the README's "MCP server" section for copy-paste snippets. Like the rest of the management surface, `/mcp` is unauthenticated — trusted networks only.
+**Connecting a client:** `claude mcp add --transport http homeyarp http://localhost:5269/mcp` (Claude Code), or an `mcp.json`-style entry with `"type": "http", "url": "http://localhost:5269/mcp"`. Claude Desktop needs a custom connector or an `mcp-remote` bridge — it doesn't take remote HTTP URLs in `claude_desktop_config.json` directly. See the README's "MCP server" section for copy-paste snippets. Like the rest of the management surface, `/mcp` is unauthenticated — the management port must stay LAN-only.
 
 ## Validation rules
 
@@ -264,11 +264,12 @@ State machine:
 
 Configured under `HomeYarp:Listeners` in `appsettings.json`. Each port is optional — set to `null` or `0` to disable. Defaults in dev:
 
-- `Http: 5268` — plain HTTP. Hosts the management API, Blazor UI, and any HTTP-mode proxy routes.
+- `Http: 5268` — plain HTTP. Hosts HTTP-mode proxy routes and the ACME HTTP-01 challenge endpoint.
 - `HttpsOffload: 5443` — Kestrel HTTPS endpoint. `SniCertificateSelector` picks a cert by SNI. Decrypted requests flow through YARP to the backend (typically as plain HTTP). Apps with `Tls.Mode == Offload` and a `CertificateId` are reachable here.
 - `HttpsPassthrough: 5444` — raw TCP listener with `TlsPassthroughConnectionHandler`. The handler peeks the ClientHello, parses SNI, finds the matching app whose `Tls.Mode == Passthrough`, opens a TCP socket to the backend (host:port from the first destination's address), replays the buffered bytes, then bidirectionally pumps data. The proxy never decrypts — the backend terminates TLS itself.
+- `Management: 5269` — plain HTTP listener for the management surface (Blazor UI, REST API, MCP). When set, the management endpoints only route on connections that arrived on this port. **The gate is `LocalPortMatcherPolicy` (`HomeYarp.WebServer/LocalPortRestriction.cs`), a routing `MatcherPolicy` keyed on `HttpContext.Connection.LocalPort`** — a connection fact the client cannot spoof. Deliberately NOT `RequireHost("*:5269")`: `HostMatcherPolicy` matches the port in the *client-supplied Host header*, so a WAN client hitting the public port with `Host: x:5269` would sail through it (the docs warn about exactly this — "to prevent host and port spoofing, use `ConnectionInfo.LocalPort`"). Candidate-level invalidation (not a middleware 404) means YARP's catch-all still matches `/api/*` paths on the public listeners, so proxied apps that serve their own `/api/*` routes keep working. When `Management` is unset/0 the gate is off and management answers on every listener (pre-5269 behavior). `HomeYarp:Management:Hosts` remains as an optional additional Host allowlist; both gates AND together.
 
-Production deployments would typically map these to 80/443/8443 (or whatever the user's port-forwarding scheme requires).
+Production deployments would typically map these to 80/443/8443 (or whatever the user's port-forwarding scheme requires) and publish the management port **only to the LAN** — never in the WAN port-forward. That makes WAN unreachability of the management surface a network-layer fact rather than a header check.
 
 ## Logging
 

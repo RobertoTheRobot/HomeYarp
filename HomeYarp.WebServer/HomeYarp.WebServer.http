@@ -1,11 +1,14 @@
+# Public listener (proxy + ACME challenges)
 @HomeYarp.WebServer_HostAddress = http://localhost:5268
+# Management listener (UI / REST API / MCP) — gated by connection local port
+@HomeYarp.WebServer_ManagementAddress = http://localhost:5269
 
 ### List applications
-GET {{HomeYarp.WebServer_HostAddress}}/api/applications
+GET {{HomeYarp.WebServer_ManagementAddress}}/api/applications
 Accept: application/json
 
 ### Create an application (proxies echo.localhost -> postman-echo.com)
-POST {{HomeYarp.WebServer_HostAddress}}/api/applications
+POST {{HomeYarp.WebServer_ManagementAddress}}/api/applications
 Content-Type: application/json
 
 {
@@ -30,14 +33,18 @@ Content-Type: application/json
 GET {{HomeYarp.WebServer_HostAddress}}/get
 Host: echo.localhost
 
+### Management API is NOT reachable on the public listener (expect 404)
+GET {{HomeYarp.WebServer_HostAddress}}/api/applications
+Accept: application/json
+
 ### List certificates
-GET {{HomeYarp.WebServer_HostAddress}}/api/certificates
+GET {{HomeYarp.WebServer_ManagementAddress}}/api/certificates
 Accept: application/json
 
 ### Request a certificate from Let's Encrypt (HTTP-01)
 # Requires HomeYarp:Acme:Enabled=true, AccountEmail set, and AgreeToTermsOfService=true.
 # Inbound port 80 must reach this server's Http listener for any of the listed hostnames.
-POST {{HomeYarp.WebServer_HostAddress}}/api/certificates/acme
+POST {{HomeYarp.WebServer_ManagementAddress}}/api/certificates/acme
 Content-Type: application/json
 
 {
@@ -47,7 +54,7 @@ Content-Type: application/json
 }
 
 ### Manually trigger renewal of an ACME-managed certificate
-POST {{HomeYarp.WebServer_HostAddress}}/api/certificates/00000000-0000-0000-0000-000000000000/renew
+POST {{HomeYarp.WebServer_ManagementAddress}}/api/certificates/00000000-0000-0000-0000-000000000000/renew
 
 ### ACME challenge probe (used by Let's Encrypt; should be 404 unless an order is in flight)
 GET {{HomeYarp.WebServer_HostAddress}}/.well-known/acme-challenge/probe

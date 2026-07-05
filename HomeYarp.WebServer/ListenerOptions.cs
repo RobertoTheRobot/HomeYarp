@@ -9,4 +9,6 @@ public sealed class ListenerOptions
     public int? HttpsOffload { get; set; }
 
     public int? HttpsPassthrough { get; set; }
+
+    public int? Management { get; set; }
 }

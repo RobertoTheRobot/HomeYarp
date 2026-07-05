@@ -1,3 +1,89 @@
+# HY-2 — Management surface on a dedicated port, gated by connection local port
+
+## Context
+
+Hand-off doc: `C:\dev\Agents\Lab manager\tasks\HY-2-lockdown-plan.md`. The management surface
+(REST API + Blazor UI + MCP) shares the public HTTP listener with the proxy and is scoped only by
+a client-spoofable `Host`-header allowlist — confirmed reachable from the WAN with
+`Host: 192.168.1.2`. The fix: give management its own listener port so the deployment can simply
+not forward that port at the firewall (WAN unreachability becomes a network fact).
+
+## Critical deviation from the hand-off plan (§5.2.3)
+
+The hand-off plan proposes `RequireHost($"*:{port}")`. **That does not close the hole.**
+ASP.NET Core's `HostMatcherPolicy` matches the port in the *client-supplied Host header*, not the
+port the connection arrived on — the official docs say so explicitly ("API that relies on the
+Host header, such as `HttpRequest.Host` and `RequireHost`, are subject to potential spoofing by
+clients. To prevent host and port spoofing, use `ConnectionInfo.LocalPort`."). A WAN attacker
+could send `Host: whatever:5269` to the still-forwarded port 80 and route straight into
+management — the exact same spoof as today, and the plan's own §6 verification (`Host:
+192.168.1.2` → 404) would NOT catch it.
+
+**Instead:** a custom `MatcherPolicy` (`LocalPortMatcherPolicy`, the same mechanism `RequireHost`
+itself uses) that invalidates management endpoint candidates when
+`HttpContext.Connection.LocalPort != managementPort`. Routing-level candidate invalidation (not a
+middleware 404) so YARP's catch-all still wins on the public port — proxied apps that legitimately
+serve `/api/*` paths of their own keep working, same semantics as the current `RequireHost` gate.
+
+`HomeYarp:Management:Hosts` stays as an *optional additional* filter (ANDs with the port gate);
+the port is the primary boundary.
+
+## Checklist
+
+- [x] `ListenerOptions.cs` — add `int? Management`
+- [x] `HomeYarpKestrelConfiguration.cs` — bind the management listener + log line; include Management in the all-disabled warning
+- [x] NEW `HomeYarp.WebServer/LocalPortRestriction.cs` — `LocalPortRestrictionMetadata` + `LocalPortMatcherPolicy` (`IEndpointSelectorPolicy`) + `RequireLocalPort<TBuilder>()` extension
+- [x] `Program.cs` — register the policy in DI; apply `RequireLocalPort` to controllers/razor/mcp (+ OpenAPI in dev) when `HomeYarp:Listeners:Management` is set; keep the Hosts filter
+- [x] `appsettings.json` — `"Management": 5269` under `HomeYarp:Listeners`
+- [x] Tests — `HomeYarp.Tests/WebServer/LocalPortRestrictionTests.cs` (policy applies/doesn't, candidate valid on mgmt port, invalidated on public port, unrestricted candidate untouched, **spoofed Host-header port doesn't bypass**, extension adds metadata) + `ListenerOptionsTests.cs` (config binding)
+- [x] Docs — CLAUDE.md (listeners + MCP sections), README (ports + MCP snippets + auth note), `HomeYarp.WebServer.http` (management requests → :5269)
+- [x] `dotnet build` + `dotnet test --solution HomeYarp.WebServer.slnx` clean
+
+Deploy-side steps (compose port publish 8080:5269, OPNsense verification, lab-manager repo docs,
+Pi-hole record) live in the hand-off doc §5.3/§6/§8 and happen outside this repo.
+
+## Review
+
+**Result: 261/261 tests passing (252 baseline + 7 new `LocalPortRestrictionTests` + 2 new
+`ListenerOptionsTests`). Live `dotnet run` smoke verified every boundary condition.**
+
+Live smoke evidence (Development, ports 5268 public / 5269 management):
+
+| Probe | Result |
+|---|---|
+| `GET :5269/api/applications` | **200** (route table JSON) |
+| `GET :5269/` (Blazor UI) | **200** |
+| `POST :5269/mcp` initialize | **200** (SSE initialize result) |
+| `GET :5268/api/applications` | **404** |
+| `GET :5268/api/applications` with `Host: localhost:5269` (spoof) | **404** |
+| `GET :5268/api/applications` with `Host: 192.168.1.2:5269` (spoof) | **404** |
+| `POST :5268/mcp` with `Host: localhost:5269` (spoof) | **404** |
+| `GET :5268/.well-known/acme-challenge/probe` | **404 from HomeYarp's handler** — log shows "ACME HTTP-01 challenge requested for unknown token 'probe'", so the endpoint stays public |
+| `GET :5268/` | **404** (UI no longer served on the public listener) |
+
+Key decisions:
+- **Deviated from the hand-off plan's `RequireHost("*:{port}")`** — it matches the client-supplied
+  Host header's port (MS docs warn about exactly this) and is spoofable from the WAN through the
+  still-forwarded port 80. Implemented `LocalPortMatcherPolicy` on `Connection.LocalPort` instead;
+  the `ApplyAsync_SpoofedHostHeaderPort_DoesNotBypassRestriction` test pins the attack down.
+- Candidate-level invalidation (a `MatcherPolicy`, same mechanism `RequireHost` uses) rather than a
+  middleware 404, so YARP's catch-all still matches `/api/*` paths on the public listeners —
+  proxied apps that serve their own `/api/*` routes keep working.
+- `HomeYarp:Management:Hosts` kept as an optional additional filter; both gates AND together. The
+  port is the primary boundary.
+- Management listener binds AnyIP inside the container by design — LAN-only is enforced by the
+  docker port publish + firewall (don't WAN-forward the host port), per hand-off doc §5.3.
+
+Not in this repo (hand-off doc §5.3/§6/§8, owner/lab-manager side): compose `8080:5269` publish +
+`HomeYarp__Listeners__Management=5269` env, OPNsense forward check, off-network verification,
+lab-manager docs + `.mcp.json` URL change to `http://192.168.1.2:8080/mcp`.
+
+Drive-by observation (not touched): `Controllers/ApplicationController.cs` is dead scaffolding —
+namespace `HomeYarp.WebApi.Controllers`, no attribute route, returns a `View()` that doesn't exist;
+`MapControllers` never routes it. Candidate for deletion in a cleanup PR.
+
+---
+
 # MCP server — expose the management API as MCP tools
 
 ## Goal

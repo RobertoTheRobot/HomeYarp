@@ -35,6 +35,9 @@ try
     builder.Services.AddControllers();
     builder.Services.AddOpenApi();
 
+    // Candidate policy backing RequireLocalPort — no-op on endpoints without the metadata.
+    builder.Services.AddSingleton<MatcherPolicy, LocalPortMatcherPolicy>();
+
     builder.Services
         .AddRazorComponents()
         .AddInteractiveServerComponents();
@@ -90,18 +93,36 @@ try
         return Results.NotFound();
     });
 
-    // The management surface (UI + REST API + OpenAPI) and the YARP proxy share
-    // listeners. Without a host filter, Razor's literal `/` outranks YARP's
-    // `/{**catch-all}` and HomeYarp's own pages are served on every proxied
-    // hostname. Set HomeYarp:Management:Hosts to scope it.
+    // The management surface (UI + REST API + MCP + OpenAPI) and the YARP proxy share
+    // listeners. Two independent gates scope it:
+    //
+    // 1. HomeYarp:Listeners:Management — THE security boundary. Management endpoints only
+    //    route on connections that physically arrived on this port (Connection.LocalPort,
+    //    which a client cannot spoof — unlike the Host header, which RequireHost matches:
+    //    a WAN client hitting the public port 80 with `Host: x:5269` would sail through a
+    //    RequireHost("*:5269") gate). Deployments keep this port off the WAN forward.
+    //
+    // 2. HomeYarp:Management:Hosts — optional cosmetic/legacy filter. Without it (or a
+    //    management port), Razor's literal `/` outranks YARP's `/{**catch-all}` and
+    //    HomeYarp's own pages are served on every proxied hostname. Both gates AND together.
+    var managementPort = app.Configuration
+        .GetSection(ListenerOptions.SectionName)
+        .Get<ListenerOptions>()?.Management;
     var managementHosts = app.Configuration
         .GetSection("HomeYarp:Management:Hosts")
         .Get<string[]>() ?? [];
 
     var controllers = app.MapControllers();
     var razor = app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
-    // MCP endpoint mirrors the REST API — same management-host restriction applies.
+    // MCP endpoint mirrors the REST API — same management restrictions apply.
     var mcp = app.MapMcp("/mcp");
+    if (managementPort is int mgmtPort and > 0)
+    {
+        controllers.RequireLocalPort(mgmtPort);
+        razor.RequireLocalPort(mgmtPort);
+        mcp.RequireLocalPort(mgmtPort);
+        Log.Information("Management surface (UI/API/MCP) restricted to connections on port {Port}", mgmtPort);
+    }
     if (managementHosts.Length > 0)
     {
         controllers.RequireHost(managementHosts);
@@ -113,6 +134,7 @@ try
     if (app.Environment.IsDevelopment())
     {
         var openApi = app.MapOpenApi();
+        if (managementPort is int openApiPort and > 0) openApi.RequireLocalPort(openApiPort);
         if (managementHosts.Length > 0) openApi.RequireHost(managementHosts);
     }
 

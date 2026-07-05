@@ -32,11 +32,14 @@ dotnet run --project HomeYarp.WebServer/HomeYarp.WebServer.csproj
 
 Defaults in development:
 
-- `http://localhost:5268` — UI, management API, MCP endpoint (`/mcp`), plain HTTP proxy
+- `http://localhost:5268` — plain HTTP proxy + ACME HTTP-01 challenges (the public listener)
 - `https://localhost:5443` — HTTPS offload (TLS terminated by HomeYarp)
 - TCP `localhost:5444` — HTTPS passthrough (raw L4 tunnel; speak TLS to it as if it were the backend)
+- `http://localhost:5269` — **management**: UI, REST API, MCP endpoint (`/mcp`)
 
-OpenAPI docs are exposed at `http://localhost:5268/openapi/v1.json` in Development. Sample requests live in `HomeYarp.WebServer/HomeYarp.WebServer.http`.
+The management surface only routes on connections that physically arrive on the management port (`HomeYarp:Listeners:Management`) — the check uses the connection's local port, not the spoofable `Host` header. In a deployment, publish/forward the first three listeners to the internet as needed and keep the management port LAN-only (don't port-forward it at your firewall); management is then unreachable from the WAN at the network layer. The management endpoints themselves remain unauthenticated — expose the port on a trusted network only.
+
+OpenAPI docs are exposed at `http://localhost:5269/openapi/v1.json` in Development. Sample requests live in `HomeYarp.WebServer/HomeYarp.WebServer.http`.
 
 ## Web UI
 
@@ -58,7 +61,7 @@ OpenAPI docs are exposed at `http://localhost:5268/openapi/v1.json` in Developme
 ### Via the API
 
 ```bash
-curl -X POST http://localhost:5268/api/applications \
+curl -X POST http://localhost:5269/api/applications \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "grafana",
@@ -142,7 +145,7 @@ The tools call the same in-process services as the REST controllers, so name uni
 **Claude Code:**
 
 ```bash
-claude mcp add --transport http homeyarp http://localhost:5268/mcp
+claude mcp add --transport http homeyarp http://localhost:5269/mcp
 ```
 
 **Any client that reads an `mcp.json`-style config** (Claude Code project `.mcp.json`, VS Code, Cursor):
@@ -152,26 +155,26 @@ claude mcp add --transport http homeyarp http://localhost:5268/mcp
   "mcpServers": {
     "homeyarp": {
       "type": "http",
-      "url": "http://localhost:5268/mcp"
+      "url": "http://localhost:5269/mcp"
     }
   }
 }
 ```
 
-**Claude Desktop** doesn't take remote HTTP servers in `claude_desktop_config.json` directly — add it as a custom connector (Settings → Connectors → Add custom connector, URL `http://<host>:5268/mcp`), or bridge it through [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+**Claude Desktop** doesn't take remote HTTP servers in `claude_desktop_config.json` directly — add it as a custom connector (Settings → Connectors → Add custom connector, URL `http://<host>:5269/mcp`), or bridge it through [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
 
 ```json
 {
   "mcpServers": {
     "homeyarp": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:5268/mcp"]
+      "args": ["mcp-remote", "http://localhost:5269/mcp"]
     }
   }
 }
 ```
 
-> **No authentication.** Like the REST API and UI, the MCP endpoint is unauthenticated — expose it on a trusted network only. If you've configured `HomeYarp:Management:Hosts`, `/mcp` is restricted to the same host list as the rest of the management surface.
+> **No authentication.** Like the REST API and UI, the MCP endpoint is unauthenticated — expose it on a trusted network only. `/mcp` lives on the management listener (`HomeYarp:Listeners:Management`) together with the rest of the management surface, so keep that port off any WAN port-forward. If you've additionally configured `HomeYarp:Management:Hosts`, the same host allowlist applies on top.
 
 ## Enabling TLS
 
@@ -193,7 +196,7 @@ The application's `tls` block selects a **mode** (how TLS is handled at the list
 For internal-only services that aren't reachable from the public internet:
 
 ```bash
-curl -X POST http://localhost:5268/api/applications \
+curl -X POST http://localhost:5269/api/applications \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "home-assistant",
@@ -223,13 +226,13 @@ Useful when one cert (e.g. a wildcard) serves many apps:
 
    ```bash
    # Upload existing PEM
-   curl -X POST http://localhost:5268/api/certificates \
+   curl -X POST http://localhost:5269/api/certificates \
      -H 'Content-Type: application/json' \
      -d "$(jq -n --rawfile cert ./fullchain.pem --rawfile key ./privkey.pem \
             '{name:"home-lan", friendlyName:"*.home.lan", certificatePem:$cert, privateKeyPem:$key}')"
 
    # Generate self-signed
-   curl -X POST http://localhost:5268/api/certificates/self-signed \
+   curl -X POST http://localhost:5269/api/certificates/self-signed \
      -H 'Content-Type: application/json' \
      -d '{"name":"home-lan-wildcard","hostnames":["*.home.lan"],"keyType":0,"validityDays":365}'
    ```
@@ -257,7 +260,7 @@ The simplest path is per-application via `tls.source = 1` (see [Enabling TLS](#e
 ### Via the API
 
 ```bash
-curl -X POST http://localhost:5268/api/certificates/self-signed \
+curl -X POST http://localhost:5269/api/certificates/self-signed \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "home-assistant-internal",
@@ -357,7 +360,7 @@ Edit `appsettings.json`:
 #### Via the API
 
 ```bash
-curl -X POST http://localhost:5268/api/certificates/acme \
+curl -X POST http://localhost:5269/api/certificates/acme \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "cloud-example",
@@ -404,7 +407,8 @@ You don't need to copy anything. On cutover:
     "Listeners": {
       "Http": 5268,
       "HttpsOffload": 5443,
-      "HttpsPassthrough": 5444
+      "HttpsPassthrough": 5444,
+      "Management": 5269
     },
     "Acme": {
       "Enabled": false,
@@ -421,8 +425,8 @@ You don't need to copy anything. On cutover:
 ```
 
 - `Storage.DataRoot` — relative paths resolve against `AppContext.BaseDirectory` (i.e. `bin/.../net10.0/data` in dev). Absolute paths are honored as-is.
-- Any listener can be disabled by setting it to `null` or `0`.
-- For production, point the listeners at `80` / `443` / `8443` (or wherever your port forwarding lands) and override the `DataRoot` to a stable absolute path. HTTP-01 challenges always arrive on the `Http` listener.
+- Any listener can be disabled by setting it to `null` or `0`. Disabling `Management` also disables the port gate — the UI/API/MCP then answer on every listener (the pre-`Management` behavior); only do that on a fully trusted network.
+- For production, point the listeners at `80` / `443` / `8443` (or wherever your port forwarding lands) and override the `DataRoot` to a stable absolute path. HTTP-01 challenges always arrive on the `Http` listener. Publish the `Management` port only to the LAN — never add it to the WAN port-forward.
 - ACME settings are read at startup — change them and restart. See [Let's Encrypt automation](#lets-encrypt-automation) above for the full table of knobs.
 
 ## Logging
