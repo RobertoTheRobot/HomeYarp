@@ -332,7 +332,12 @@ public sealed class ApplicationService : IApplicationService
                 throw new ArgumentException("Destination name is required.", nameof(application));
             }
 
-            if (!Uri.TryCreate(destination.Address, UriKind.Absolute, out _))
+            // UriKind.Absolute alone isn't enough: on Unix, Uri.TryCreate treats a rooted path
+            // like "/relative/path" as a valid file:// URI, so a scheme-less string would
+            // silently pass here on Linux while correctly failing on Windows. Destinations must
+            // be http(s) endpoints.
+            if (!Uri.TryCreate(destination.Address, UriKind.Absolute, out var destinationUri)
+                || (destinationUri.Scheme != Uri.UriSchemeHttp && destinationUri.Scheme != Uri.UriSchemeHttps))
             {
                 throw new ArgumentException($"Destination '{destination.Name}' has an invalid address: '{destination.Address}'.", nameof(application));
             }
