@@ -1,0 +1,78 @@
+name: Build, test, and deploy
+
+# Runs on every merge to main (and manually via workflow_dispatch). Builds the container image,
+# pushes it to the private registry, then deploys it to nuc1 via the dedicated `deploy` user
+# (docker group, no sudo) over SSH. See lab-manager docs/runbooks/homeyarp-cicd.md for the full
+# picture, rollback steps, and the registry-cert-rotation gotcha.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Deploy an existing image tag instead of building a new one (optional)"
+        required: false
+        type: string
+
+concurrency:
+  group: homeyarp-deploy
+  cancel-in-progress: false
+
+env:
+  REGISTRY: registry.perezfaulks.com
+  IMAGE: homeyarp-webserver
+  NUC1_HOST: 192.168.1.2
+
+jobs:
+  build-test-deploy:
+    runs-on: [self-hosted, linux, x64, dotnet, docker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        if: ${{ !inputs.tag }}
+        run: dotnet test --solution HomeYarp.WebServer.slnx -c Release
+
+      # The registry's self-signed cert (subject == issuer) rotates on regeneration, so we
+      # re-fetch it from the live endpoint every run instead of trusting a static copy — this
+      # is the one step that must never go stale (see docs/runbooks/homeyarp-cicd.md).
+      - name: Refresh registry TLS trust
+        if: ${{ !inputs.tag }}
+        run: |
+          sudo install -d -m 0755 "/etc/docker/certs.d/${REGISTRY}"
+          echo | openssl s_client -connect ${NUC1_HOST}:443 -servername "${REGISTRY}" 2>/dev/null \
+            | openssl x509 > /tmp/registry-ca.crt
+          openssl x509 -in /tmp/registry-ca.crt -noout -subject -enddate
+          sudo install -m 0644 /tmp/registry-ca.crt "/etc/docker/certs.d/${REGISTRY}/ca.crt"
+          rm -f /tmp/registry-ca.crt
+
+      - name: Build and push image
+        if: ${{ !inputs.tag }}
+        run: |
+          dotnet publish HomeYarp.WebServer/HomeYarp.WebServer.csproj -c Release \
+            -t:PublishContainer \
+            -p:ContainerRegistry=${REGISTRY} \
+            -p:ContainerRepository=${IMAGE} \
+            -p:ContainerImageTag=${{ steps.tag.outputs.value }}
+          docker push "${REGISTRY}/${IMAGE}:${{ steps.tag.outputs.value }}"
+
+      - name: Deploy to nuc1
+        run: |
+          ssh -i ~/.ssh/id_ed25519_ci_deploy -o StrictHostKeyChecking=yes \
+            deploy@${NUC1_HOST} \
+            "/srv/lab/homeyarp/deploy-homeyarp.sh ${{ steps.tag.outputs.value }}"
+
+      - name: Post-deploy check
+        run: |
+          curl -sf -o /dev/null http://${NUC1_HOST}/ && echo "Public proxy :80 OK"
+          curl -sf http://${NUC1_HOST}:5269/api/applications -o /dev/null && echo "Management API :5269 OK"
