@@ -46,16 +46,31 @@ jobs:
       # The registry's self-signed cert (subject == issuer) rotates on regeneration, so we
       # re-fetch it from the live endpoint every run instead of trusting a static copy — this
       # is the one step that must never go stale (see docs/runbooks/homeyarp-cicd.md).
+      #
+      # Installed in TWO places because two different TLS stacks touch this registry here:
+      # Docker's certs.d (for `docker pull`/`push`) AND the OS trust store, because
+      # `dotnet publish -t:PublishContainer` pushes directly to the registry via the SDK's own
+      # HTTP registry client (Microsoft.NET.Build.Containers.Registry) — it never goes through
+      # the Docker daemon, so certs.d alone isn't enough; it relies on .NET's SslStream, which
+      # reads the system CA store.
       - name: Refresh registry TLS trust
         if: ${{ !inputs.tag }}
         run: |
-          sudo install -d -m 0755 "/etc/docker/certs.d/${REGISTRY}"
           echo | openssl s_client -connect ${NUC1_HOST}:443 -servername "${REGISTRY}" 2>/dev/null \
             | openssl x509 > /tmp/registry-ca.crt
           openssl x509 -in /tmp/registry-ca.crt -noout -subject -enddate
+
+          sudo install -d -m 0755 "/etc/docker/certs.d/${REGISTRY}"
           sudo install -m 0644 /tmp/registry-ca.crt "/etc/docker/certs.d/${REGISTRY}/ca.crt"
+
+          sudo install -m 0644 /tmp/registry-ca.crt "/usr/local/share/ca-certificates/${REGISTRY}.crt"
+          sudo update-ca-certificates
+
           rm -f /tmp/registry-ca.crt
 
+      # -t:PublishContainer with ContainerRegistry set pushes straight to the registry as part
+      # of publish (SDK's own registry client) — there is no local image to `docker push`
+      # afterward, so this is the only step needed.
       - name: Build and push image
         if: ${{ !inputs.tag }}
         run: |
@@ -64,7 +79,6 @@ jobs:
             -p:ContainerRegistry=${REGISTRY} \
             -p:ContainerRepository=${IMAGE} \
             -p:ContainerImageTag=${{ steps.tag.outputs.value }}
-          docker push "${REGISTRY}/${IMAGE}:${{ steps.tag.outputs.value }}"
 
       - name: Deploy to nuc1
         run: |
