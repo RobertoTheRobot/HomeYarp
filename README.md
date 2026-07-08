@@ -307,6 +307,14 @@ The certificate page (`/certificates`) and the applications page (`/applications
 - Docker daemon (`/etc/docker/certs.d/<host>/ca.crt`) and Docker Desktop on Windows
 - Firefox (which keeps its own CA list — manual import via Settings → Privacy & Security → Certificates)
 
+**These stores are independent — trusting one doesn't cover the others.** In particular, if you're
+pushing to a registry fronted by HomeYarp using the .NET SDK's built-in container support
+(`dotnet publish -t:PublishContainer` / `-p:PublishProfile=DefaultContainer`), that push goes
+through the SDK's own HTTP registry client, not the Docker daemon — it relies on `SslStream`/the
+**OS CA store**, so the Docker-daemon snippet above won't help it. Trust the OS-store snippet
+instead (or in addition, if the same machine also runs plain `docker pull`/`push` against the
+same host).
+
 ACME-issued and manually-uploaded certs don't need a trust step (their CA is already in the OS store), so the trust dialog only appears for the self-signed source.
 
 ## Let's Encrypt automation
