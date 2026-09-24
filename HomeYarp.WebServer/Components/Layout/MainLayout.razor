@@ -1,15 +1,54 @@
 @inherits LayoutComponentBase
+@inject IJSRuntime JS
 
-<MudThemeProvider Theme="@TheMatrixTheme.Theme" IsDarkMode="true" />
+<MudThemeProvider @ref="_themeProvider" Theme="@VisualStudioCodeTheme.Theme" @bind-IsDarkMode="_isDarkMode" />
 <MudPopoverProvider />
 <MudDialogProvider />
 <MudSnackbarProvider />
 
 <div class="page">
-    <NavMenu />
+    <NavMenu IsDarkMode="_isDarkMode" OnToggleTheme="ToggleTheme" />
     <main>
         <article>
             @Body
         </article>
     </main>
 </div>
+
+@code {
+    private const string ThemeStorageKey = "homeyarp-theme";
+
+    // HomeYarp always defaulted to dark before this toggle existed — keep that as the
+    // pre-JS-interop default so returning admins see no flash before their saved/system
+    // preference (read in OnAfterRenderAsync) takes over.
+    private bool _isDarkMode = true;
+    private MudThemeProvider _themeProvider = null!;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        var saved = await JS.InvokeAsync<string?>("localStorage.getItem", ThemeStorageKey);
+        var wantsDark = saved switch
+        {
+            "dark" => true,
+            "light" => false,
+            _ => await _themeProvider.GetSystemDarkModeAsync(),
+        };
+
+        if (wantsDark != _isDarkMode)
+        {
+            _isDarkMode = wantsDark;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDarkMode = !_isDarkMode;
+        await JS.InvokeVoidAsync("localStorage.setItem", ThemeStorageKey, _isDarkMode ? "dark" : "light");
+    }
+}
