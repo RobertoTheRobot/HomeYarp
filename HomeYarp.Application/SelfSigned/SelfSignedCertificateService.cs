@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using HomeYarp.Application.Abstractions;
+using HomeYarp.Application.RootCa;
 using HomeYarp.Domain;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,15 +15,18 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> CertGates = new();
 
     private readonly ICertificateRepository _certificates;
+    private readonly IRootCaService _rootCa;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SelfSignedCertificateService> _logger;
 
     public SelfSignedCertificateService(
         ICertificateRepository certificates,
+        IRootCaService rootCa,
         TimeProvider timeProvider,
         ILogger<SelfSignedCertificateService>? logger = null)
     {
         _certificates = certificates;
+        _rootCa = rootCa;
         _timeProvider = timeProvider;
         _logger = logger ?? NullLogger<SelfSignedCertificateService>.Instance;
     }
@@ -151,8 +155,8 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             var notAfter = now.AddDays(validityDays);
 
             progress?.Report($"Generating {keyType} key pair");
-            progress?.Report($"Building self-signed certificate (CN={hostnames[0]}, {hostnames.Count} SAN entr{(hostnames.Count == 1 ? "y" : "ies")}, valid {validityDays} days)");
-            var (certificatePem, privateKeyPem, snapshot) = Generate(hostnames, keyType, notBefore, notAfter);
+            progress?.Report($"Signing certificate with the HomeYarp root CA (CN={hostnames[0]}, {hostnames.Count} SAN entr{(hostnames.Count == 1 ? "y" : "ies")}, valid {validityDays} days)");
+            var (certificatePem, privateKeyPem, snapshot) = await GenerateAsync(hostnames, keyType, notBefore, notAfter, cancellationToken);
 
             var certificate = new Certificate
             {
@@ -200,11 +204,12 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
         }
     }
 
-    private static (string CertificatePem, string PrivateKeyPem, CertificateMetadataSnapshot Snapshot) Generate(
+    private async Task<(string CertificatePem, string PrivateKeyPem, CertificateMetadataSnapshot Snapshot)> GenerateAsync(
         IReadOnlyList<string> hostnames,
         CertificateKeyType keyType,
         DateTimeOffset notBefore,
-        DateTimeOffset notAfter)
+        DateTimeOffset notAfter,
+        CancellationToken cancellationToken)
     {
         var subject = new X500DistinguishedName($"CN={hostnames[0]}");
 
@@ -226,7 +231,7 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             using var rsa = RSA.Create(2048);
             var request = new CertificateRequest(subject, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             ApplyExtensions(request, sanBuilder);
-            using var cert = request.CreateSelfSigned(notBefore, notAfter);
+            using var cert = await _rootCa.SignLeafAsync(request, notBefore, notAfter, cancellationToken);
             return Export(cert, rsa.ExportPkcs8PrivateKeyPem());
         }
         else
@@ -234,7 +239,7 @@ public sealed class SelfSignedCertificateService : ISelfSignedCertificateService
             using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var request = new CertificateRequest(subject, ecdsa, HashAlgorithmName.SHA256);
             ApplyExtensions(request, sanBuilder);
-            using var cert = request.CreateSelfSigned(notBefore, notAfter);
+            using var cert = await _rootCa.SignLeafAsync(request, notBefore, notAfter, cancellationToken);
             return Export(cert, ecdsa.ExportPkcs8PrivateKeyPem());
         }
     }

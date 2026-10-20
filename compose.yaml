@@ -57,4 +57,6 @@ services:
       HomeYarp__Acme__Enabled: ${ACME_ENABLED:-false}
       HomeYarp__Acme__AccountEmail: ${ACME_EMAIL:-}
       HomeYarp__Acme__AgreeToTermsOfService: ${ACME_AGREE_TOS:-false}
+      # Re-sign legacy self-signed Internal certs under the root CA. Only enable after the root CA is trusted on every client.
+      HomeYarp__RootCa__MigrateLegacyCertificates: ${ROOTCA_MIGRATE_LEGACY:-false}
       # HomeYarp__Acme__DirectoryUrl: https://acme-staging-v02.api.letsencrypt.org/directory

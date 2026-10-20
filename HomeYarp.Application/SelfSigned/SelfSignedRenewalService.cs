@@ -1,4 +1,5 @@
 using HomeYarp.Application.Abstractions;
+using HomeYarp.Application.RootCa;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -11,17 +12,20 @@ public sealed class SelfSignedRenewalService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptionsMonitor<SelfSignedOptions> _options;
+    private readonly IOptionsMonitor<RootCaOptions> _rootCaOptions;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SelfSignedRenewalService> _logger;
 
     public SelfSignedRenewalService(
         IServiceScopeFactory scopeFactory,
         IOptionsMonitor<SelfSignedOptions> options,
+        IOptionsMonitor<RootCaOptions> rootCaOptions,
         TimeProvider timeProvider,
         ILogger<SelfSignedRenewalService>? logger = null)
     {
         _scopeFactory = scopeFactory;
         _options = options;
+        _rootCaOptions = rootCaOptions;
         _timeProvider = timeProvider;
         _logger = logger ?? NullLogger<SelfSignedRenewalService>.Instance;
     }
@@ -95,7 +99,19 @@ public sealed class SelfSignedRenewalService : BackgroundService
         var threshold = options.RenewBefore;
 
         var certs = await repo.GetAllAsync(cancellationToken);
-        var due = certs.Where(c => c.SelfSigned is not null && c.NotAfter - now < threshold).ToList();
+
+        // Legacy per-cert self-signed certs (issuer == subject) are re-signed under the root CA only when
+        // explicitly enabled, once every client that pinned an old leaf trusts the root instead.
+        string? rootSubject = null;
+        if (_rootCaOptions.CurrentValue.MigrateLegacyCertificates)
+        {
+            var rootCa = scope.ServiceProvider.GetRequiredService<IRootCaService>();
+            rootSubject = (await rootCa.EnsureInitializedAsync(cancellationToken)).Subject;
+        }
+
+        var due = certs.Where(c => c.SelfSigned is not null
+            && (c.NotAfter - now < threshold
+                || (rootSubject is not null && !string.Equals(c.Issuer, rootSubject, StringComparison.OrdinalIgnoreCase)))).ToList();
 
         if (due.Count == 0)
         {

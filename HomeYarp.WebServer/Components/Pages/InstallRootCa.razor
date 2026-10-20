@@ -1,0 +1,221 @@
+@page "/trust"
+@using HomeYarp.Application.RootCa
+@using HomeYarp.WebServer.Dtos
+@inject IRootCaService RootCa
+@inject ICertificateService Certificates
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+<PageTitle>Install the root CA · HomeYarp</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-1">Install the HomeYarp root CA</MudText>
+<MudText Typo="Typo.body1" Class="mb-4">
+    Do this once per device. Afterwards every <strong>Internal</strong> (HomeYarp-signed) site opens without certificate warnings —
+    including ones added later and after renewals.
+</MudText>
+
+@if (_ca is null)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else
+{
+    <MudPaper Outlined="true" Class="pa-3 mb-4">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3" Wrap="Wrap.Wrap">
+            <MudIcon Icon="@Icons.Material.Filled.VerifiedUser" Color="Color.Primary" />
+            <div>
+                <MudText Typo="Typo.subtitle2">@_ca.Subject · valid until @_ca.NotAfter.ToString("yyyy-MM-dd")</MudText>
+                <MudText Typo="Typo.caption">SHA-256 fingerprint (each installer checks this before trusting anything):</MudText>
+                <code style="word-break: break-all;">@_ca.Sha256Fingerprint</code>
+            </div>
+        </MudStack>
+    </MudPaper>
+
+    <MudTabs Elevation="0" Rounded="true" Outlined="true" @bind-ActivePanelIndex="_tab" PanelClass="pa-4">
+        <MudTabPanel Text="Windows" Icon="@Icons.Material.Filled.Window">
+            <MudText Typo="Typo.h6" Class="mb-2">Fastest: one command (2 clicks)</MudText>
+            <MudStack Spacing="2" Class="mb-4">
+                <MudText>1. Copy the command:
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" OnClick="@(() => CopyAsync(WindowsCommand))"
+                               StartIcon="@Icons.Material.Filled.ContentCopy" Class="ml-2">Copy command</MudButton></MudText>
+                <MudText>2. Press <kbd>Win</kbd>, type <code>powershell</code>, press <kbd>Enter</kbd>, paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) and press <kbd>Enter</kbd>.</MudText>
+                <MudText>3. Click <strong>Yes</strong> on the Windows security prompt. It trusts the CA for your user only — no administrator needed.</MudText>
+                <pre style="@PreStyle">@WindowsCommand</pre>
+            </MudStack>
+
+            <MudText Typo="Typo.h6" Class="mb-2">Or: download and double-click</MudText>
+            <MudStack Spacing="2" Class="mb-4">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Href="api/ca/install/windows.cmd" download="install-homeyarp-ca.cmd"
+                           StartIcon="@Icons.Material.Filled.Download" Style="width: fit-content;">Download installer (.cmd)</MudButton>
+                <MudText Typo="Typo.body2">Your browser may warn about this file type — choose <strong>Keep</strong>, then open it; if SmartScreen appears click
+                    <strong>More info → Run anyway</strong>. Then click <strong>Yes</strong> on the certificate prompt.</MudText>
+            </MudStack>
+
+            <MudText Typo="Typo.h6" Class="mb-2">Or: do it by hand</MudText>
+            <MudButton Variant="Variant.Text" Href="api/ca/root" download="homeyarp-root-ca.crt" StartIcon="@Icons.Material.Filled.Download">Download homeyarp-root-ca.crt</MudButton>
+            <ol>
+                <li>Double-click the file → <strong>Install Certificate…</strong> → <strong>Current User</strong> → Next.</li>
+                <li><strong>Place all certificates in the following store</strong> → Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Finish → Yes.</li>
+            </ol>
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+                Edge and Chrome use this store automatically. <strong>Firefox</strong>: open <code>about:config</code> and set
+                <code>security.enterprise_roots.enabled</code> to <code>true</code>.
+            </MudAlert>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Chromebook" Icon="@Icons.Material.Filled.LaptopChromebook">
+            <MudText Typo="Typo.body2" Class="mb-3">ChromeOS doesn't allow scripts to change the certificate store, so this is the shortest route: one download, then Settings.</MudText>
+            <MudStack Spacing="2">
+                <MudText>1. Download the certificate:
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Href="api/ca/root" download="homeyarp-root-ca.crt"
+                               StartIcon="@Icons.Material.Filled.Download" Class="ml-2">homeyarp-root-ca.crt</MudButton></MudText>
+                <MudText>2. Open the certificate settings. Browsers block links to <code>chrome://</code> pages, so copy this and paste it into a new tab:
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => CopyAsync("chrome://settings/certificates"))"
+                               StartIcon="@Icons.Material.Filled.ContentCopy" Class="ml-2">Copy chrome://settings/certificates</MudButton></MudText>
+                <MudText>3. Open the <strong>Authorities</strong> tab → <strong>Import</strong> → choose <code>homeyarp-root-ca.crt</code> from Downloads.</MudText>
+                <MudText>4. Tick <strong>Trust this certificate for identifying websites</strong> → <strong>OK</strong>.</MudText>
+                <MudText>5. Come back here and press <strong>Check this device</strong> below.</MudText>
+            </MudStack>
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                If you use the Linux (Crostini) container, run the <strong>Linux / macOS</strong> tab's command inside it as well — the container has its own trust store.
+                School/work-managed Chromebooks may block importing certificates.
+            </MudAlert>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Linux / macOS" Icon="@Icons.Material.Filled.Terminal">
+            <MudText Typo="Typo.h6" Class="mb-2">One command</MudText>
+            <MudStack Spacing="2" Class="mb-4">
+                <MudText>1. Copy the command:
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" OnClick="@(() => CopyAsync(LinuxCommand))"
+                               StartIcon="@Icons.Material.Filled.ContentCopy" Class="ml-2">Copy command</MudButton></MudText>
+                <MudText>2. Paste it in a terminal and enter your password when <code>sudo</code> asks.</MudText>
+                <pre style="@PreStyle">@LinuxCommand</pre>
+                <MudText Typo="Typo.body2">
+                    It verifies the fingerprint, then trusts the CA system-wide (Debian/Ubuntu, Fedora/RHEL, Arch, macOS) and — if
+                    <code>certutil</code> (libnss3-tools) is installed — in your Chrome/Chromium and Firefox profiles. No curl? Use
+                    <code>wget -qO- … | sh</code>. Preview first with <code>DRY_RUN=1</code>.
+                </MudText>
+            </MudStack>
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Href="api/ca/install/linux.sh" download="install-homeyarp-ca.sh"
+                       StartIcon="@Icons.Material.Filled.Download">Download as a file instead</MudButton>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Android" Icon="@Icons.Material.Filled.PhoneAndroid">
+            <MudStack Spacing="2">
+                <MudText>1. Download:
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Href="api/ca/root" download="homeyarp-root-ca.crt"
+                               StartIcon="@Icons.Material.Filled.Download" Class="ml-2">homeyarp-root-ca.crt</MudButton></MudText>
+                <MudText>2. <strong>Settings → Security &amp; privacy → More security &amp; privacy → Encryption &amp; credentials → Install a certificate → CA certificate</strong> → Install anyway → pick the file.</MudText>
+                <MudText Typo="Typo.body2">Menu names vary by Android version/vendor. Chrome on Android then trusts the site; some apps ignore user-installed CAs.</MudText>
+                <MudText Typo="Typo.body2">iPhone/iPad need a configuration profile, which HomeYarp doesn't generate yet.</MudText>
+            </MudStack>
+        </MudTabPanel>
+    </MudTabs>
+
+    <MudText Typo="Typo.h5" Class="mt-6 mb-2">Check this device</MudText>
+    <MudText Typo="Typo.body2" Class="mb-2">
+        Tests your browser's trust of each Internal site (needs those names to resolve from here, e.g. via the home DNS or VPN).
+        Restart the browser first if you just installed the CA.
+    </MudText>
+    <MudButton Variant="Variant.Filled" Color="Color.Success" OnClick="CheckAsync" Disabled="_checking"
+               StartIcon="@Icons.Material.Filled.FactCheck">@(_checking ? "Checking…" : "Check this device")</MudButton>
+
+    @if (_results.Count > 0)
+    {
+        <MudSimpleTable Dense="true" Class="mt-3" Style="max-width: 560px;">
+            <tbody>
+                @foreach (var r in _results)
+                {
+                    <tr>
+                        <td>@r.Key</td>
+                        <td>
+                            @switch (r.Value)
+                            {
+                                case "trusted": <MudChip T="string" Color="Color.Success" Size="Size.Small">Trusted</MudChip> break;
+                                case "untrusted": <MudChip T="string" Color="Color.Error" Size="Size.Small">Not trusted / unreachable</MudChip> break;
+                                case "timeout": <MudChip T="string" Color="Color.Warning" Size="Size.Small">Timed out</MudChip> break;
+                                default: <MudChip T="string" Size="Size.Small">Checking…</MudChip> break;
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+    }
+
+    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-4">
+        This page is plain HTTP on your LAN, so check the fingerprint above matches what the installer prints. Only install the CA on devices you control —
+        trusting it lets HomeYarp's CA vouch for any hostname on that device.
+    </MudAlert>
+}
+
+@code {
+    private const string PreStyle = "background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;";
+
+    private RootCaResponse? _ca;
+    private int _tab;
+    private bool _checking;
+    private readonly Dictionary<string, string> _results = new();
+
+    private string BaseUrl => Nav.BaseUri.TrimEnd('/');
+    private string WindowsCommand => $"irm {BaseUrl}/api/ca/install/windows.ps1 | iex";
+    private string LinuxCommand => $"curl -fsSL {BaseUrl}/api/ca/install/linux.sh | sh";
+
+    protected override async Task OnInitializedAsync()
+        => _ca = RootCaResponse.From(await RootCa.EnsureInitializedAsync());
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+        try
+        {
+            var platform = await JS.InvokeAsync<string>("homeyarpTrust.platform");
+            var tab = platform switch { "windows" => 0, "chromeos" => 1, "linux" or "macos" => 2, "android" => 3, _ => 0 };
+            if (tab != _tab)
+            {
+                _tab = tab;
+                StateHasChanged();
+            }
+        }
+        catch (JSException)
+        {
+            // Detection is a convenience only; stay on the Windows tab.
+        }
+    }
+
+    private async Task CopyAsync(string text)
+    {
+        var ok = await JS.InvokeAsync<bool>("homeyarpTrust.copy", text);
+        Snackbar.Add(ok ? "Copied to clipboard" : "Couldn't copy — select the text and copy it manually", ok ? Severity.Success : Severity.Warning);
+    }
+
+    private async Task CheckAsync()
+    {
+        _checking = true;
+        _results.Clear();
+        var certs = await Certificates.ListAsync();
+        var hosts = certs.Where(c => c.SelfSigned is not null)
+            .SelectMany(c => c.SelfSigned!.Hostnames)
+            .Where(h => !System.Net.IPAddress.TryParse(h, out _) && !h.StartsWith('*'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(h => h)
+            .ToList();
+        foreach (var h in hosts)
+        {
+            _results[h] = "checking";
+        }
+        StateHasChanged();
+
+        foreach (var h in hosts)
+        {
+            _results[h] = await JS.InvokeAsync<string>("homeyarpTrust.probe", $"https://{h}/");
+            StateHasChanged();
+        }
+        _checking = false;
+    }
+}

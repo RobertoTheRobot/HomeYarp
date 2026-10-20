@@ -12,6 +12,10 @@
 <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
     <MudText Typo="Typo.h4">Certificates</MudText>
     <MudSpacer />
+    <MudButton Variant="Variant.Outlined" Color="Color.Secondary" OnClick="ShowRootCaAsync"
+               StartIcon="@Icons.Material.Filled.VerifiedUser" Class="mr-2">
+        Root CA
+    </MudButton>
     <MudButton Variant="Variant.Outlined" Color="Color.Primary"
                StartIcon="@Icons.Material.Filled.AutoFixHigh" Href="certificates/generate">
         Generate self-signed
@@ -264,6 +268,12 @@ else
         {
             _busyId = null;
         }
+    }
+
+    private async Task ShowRootCaAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<TrustRootCaDialog>("Trust the HomeYarp root CA", options);
     }
 
     private async Task ShowTrustInstructionsAsync(HomeYarp.Domain.Certificate cert)

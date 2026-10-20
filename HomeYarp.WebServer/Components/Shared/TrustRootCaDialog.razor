@@ -1,0 +1,85 @@
+@* Install-once instructions for HomeYarp's private root CA. Every "Internal" certificate HomeYarp
+   issues is signed by this CA, so trusting it once per device covers all current and future apps. *@
+@using HomeYarp.Application.RootCa
+@using HomeYarp.WebServer.Dtos
+@inject IRootCaService RootCa
+
+<MudDialog>
+    <DialogContent>
+        @if (_ca is null)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="mb-3">
+                Download the root certificate once (public key only — the CA's private key never leaves the server),
+                install it on each device, and every <strong>Internal</strong> certificate HomeYarp issues is trusted —
+                including ones created later and after renewals.
+            </MudText>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Href="api/ca/root"
+                       StartIcon="@Icons.Material.Filled.Download" Class="mb-3">Download homeyarp-root-ca.crt</MudButton>
+            <MudButton Variant="Variant.Text" Color="Color.Primary" Href="trust" Class="mb-3 ml-2"
+                       StartIcon="@Icons.Material.Filled.AutoFixHigh">Guided install (Windows · Chromebook · Linux)</MudButton>
+
+            <MudSimpleTable Dense="true" Class="mb-3">
+                <tbody>
+                    <tr><td>Subject</td><td><code>@_ca.Subject</code></td></tr>
+                    <tr><td>SHA-256 fingerprint</td><td><code style="word-break: break-all;">@_ca.Sha256Fingerprint</code></td></tr>
+                    <tr><td>Valid</td><td>@_ca.NotBefore.ToString("yyyy-MM-dd") → @_ca.NotAfter.ToString("yyyy-MM-dd")</td></tr>
+                </tbody>
+            </MudSimpleTable>
+            <MudText Typo="Typo.caption" Class="mb-2">Compare the fingerprint on the device before trusting the file.</MudText>
+
+            <MudExpansionPanels MultiExpansion="false" Outlined="true">
+                <MudExpansionPanel Text="Windows — current user (no admin needed)">
+                    <pre style="@PreStyle">@($"Import-Certificate -FilePath .\\{File} -CertStoreLocation Cert:\\CurrentUser\\Root")</pre>
+                    <MudText Typo="Typo.caption" Class="mt-2">
+                        Windows asks you to confirm once. Use <code>Cert:\LocalMachine\Root</code> from an elevated shell to trust it for all users.
+                        Edge, Chrome, .NET and Docker Desktop all read this store.
+                    </MudText>
+                </MudExpansionPanel>
+                <MudExpansionPanel Text="Linux — Debian/Ubuntu system store">
+                    <pre style="@PreStyle">@($"sudo cp {File} /usr/local/share/ca-certificates/homeyarp-root-ca.crt\nsudo update-ca-certificates")</pre>
+                </MudExpansionPanel>
+                <MudExpansionPanel Text="Docker daemon (docker pull/push to a HomeYarp-fronted registry)">
+                    <pre style="@PreStyle">@($"sudo mkdir -p /etc/docker/certs.d/<registry-host>\nsudo cp {File} /etc/docker/certs.d/<registry-host>/ca.crt\nsudo systemctl restart docker")</pre>
+                </MudExpansionPanel>
+                <MudExpansionPanel Text="Node.js / Claude Code (NODE_EXTRA_CA_CERTS)">
+                    <pre style="@PreStyle">@($"export NODE_EXTRA_CA_CERTS=$HOME/.config/lab-ca/{File}")</pre>
+                    <MudText Typo="Typo.caption" Class="mt-2">Node ignores the OS store; point it at a bundle containing the root.</MudText>
+                </MudExpansionPanel>
+                <MudExpansionPanel Text="macOS — system Keychain">
+                    <pre style="@PreStyle">@($"sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {File}")</pre>
+                </MudExpansionPanel>
+                <MudExpansionPanel Text="Firefox (own store)">
+                    <MudText Typo="Typo.body2">
+                        Either set <code>security.enterprise_roots.enabled = true</code> in <code>about:config</code> (uses the Windows/macOS store),
+                        or Settings → Privacy &amp; Security → View Certificates → Authorities → Import.
+                    </MudText>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+
+            <MudAlert Severity="Severity.Warning" Class="mt-3" Dense="true">
+                Anyone holding the CA's private key can mint a trusted certificate for any hostname on every device that trusts this root.
+                The key lives in the server's data folder (<code>ca/root.key.pem</code>) — keep it out of git, images and shared backups.
+            </MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private const string File = "homeyarp-root-ca.crt";
+    private const string PreStyle = "background: var(--mud-palette-background-grey); padding: 12px; border-radius: 4px; overflow-x: auto; margin: 0;";
+    private RootCaResponse? _ca;
+
+    protected override async Task OnInitializedAsync()
+        => _ca = RootCaResponse.From(await RootCa.EnsureInitializedAsync());
+
+    private void Close() => MudDialog.Close();
+}

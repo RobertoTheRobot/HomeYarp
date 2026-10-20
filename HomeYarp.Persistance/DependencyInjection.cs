@@ -1,5 +1,6 @@
 using HomeYarp.Application.Abstractions;
 using HomeYarp.Application.Acme;
+using HomeYarp.Application.RootCa;
 using HomeYarp.Persistance.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +15,7 @@ public static class DependencyInjection
         services.AddSingleton<IApplicationRepository, JsonApplicationRepository>();
         services.AddSingleton<ICertificateRepository, JsonCertificateRepository>();
         services.AddSingleton<IAcmeAccountStore, FileAcmeAccountStore>();
+        services.AddSingleton<IRootCaStore, FileRootCaStore>();
         services.AddScoped<HomeYarpDbContext>();
         return services;
     }

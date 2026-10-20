@@ -1,5 +1,6 @@
 using HomeYarp.Application.Acme;
 using HomeYarp.Application.Proxy;
+using HomeYarp.Application.RootCa;
 using HomeYarp.Application.SelfSigned;
 using HomeYarp.Application.Services;
 using HomeYarp.Application.Tls;
@@ -16,6 +17,7 @@ public static class DependencyInjection
     {
         services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
         services.Configure<SelfSignedOptions>(configuration.GetSection(SelfSignedOptions.SectionName));
+        services.Configure<RootCaOptions>(configuration.GetSection(RootCaOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<IApplicationService, ApplicationService>();
@@ -23,6 +25,7 @@ public static class DependencyInjection
         services.AddScoped<IAcmeService, AcmeService>();
         services.AddScoped<ISelfSignedCertificateService, SelfSignedCertificateService>();
 
+        services.AddSingleton<IRootCaService, RootCaService>();
         services.AddSingleton<IProxyConfigProvider, HomeYarpConfigProvider>();
         services.AddSingleton<SniCertificateSelector>();
         services.AddSingleton<PassthroughRouteTable>();
@@ -30,6 +33,7 @@ public static class DependencyInjection
         services.AddSingleton<IAcmeChallengeStore, InMemoryAcmeChallengeStore>();
         services.AddSingleton<IRuntimeReloadService, RuntimeReloadService>();
 
+        services.AddHostedService<RootCaInitializer>();
         services.AddHostedService<AcmeRenewalService>();
         services.AddHostedService<SelfSignedRenewalService>();
 
