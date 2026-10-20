@@ -315,7 +315,8 @@ Self-signed ("Internal") certificates are signed by a **root CA that HomeYarp ge
 (`{DataRoot}/ca/`). Install that one root certificate on each device and every Internal certificate — current, future and
 renewed — is trusted, with no per-app browser warnings.
 
-1. Open **Certificates → Root CA** (or `GET http://<host>:5269/api/ca/root`) and download `homeyarp-root-ca.crt`.
+0. Easiest: open **`http://<host>:5269/trust`** (nav: *Install CA*) on the device — it detects Windows / Chromebook / Linux / macOS / Android and walks you through it with copy-and-paste one-liners and a "Check this device" test.
+1. Or manually: open **Certificates → Root CA** (or `GET http://<host>:5269/api/ca/root`) and download `homeyarp-root-ca.crt`.
 2. Compare the SHA-256 fingerprint shown in the UI (or `GET /api/ca`) with the file on the device, then install it, e.g. on Windows:
    `Import-Certificate -FilePath .\homeyarp-root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
    The dialog has Linux, Docker, Node (`NODE_EXTRA_CA_CERTS`), macOS and Firefox variants.
