@@ -13,9 +13,9 @@ A YARP-based reverse proxy with a built-in REST API and Blazor UI for managing a
   - **Passthrough** — proxy peeks the TLS ClientHello SNI, opens a raw TCP socket to the backend, and bidirectionally pumps bytes. The proxy never decrypts; the backend terminates TLS itself.
 - **Three certificate sources**, all interchangeable from the proxy's point of view:
   - **Manual** — paste a PEM cert + key (or POST one).
-  - **Self-signed** — HomeYarp generates a key and self-signs for the requested hostnames. Wildcards and IP SANs supported. Use for internal-only services. Auto-renewed by a daily background worker that regenerates any self-signed cert within the configured expiry threshold.
+  - **Internal (private root CA)** — HomeYarp generates a key and signs it with the instance's own **root CA** for the requested hostnames (the CA is created on first start). Wildcards and IP SANs supported. Install the root once per device ([Private root CA](#private-root-ca-trust-once)) and every Internal cert — current, future and renewed — is trusted. Use for internal-only services. Auto-renewed by a daily background worker that regenerates any Internal cert within the configured expiry threshold.
   - **Let's Encrypt** — issued and auto-renewed via ACME HTTP-01. A daily background worker renews any cert within the configured expiry threshold.
-- **One-step TLS via per-app `Internal` / `External` toggle.** Pick `Internal` and HomeYarp self-signs for the route hostnames. Pick `External` and HomeYarp orders from Let's Encrypt. The cert's lifecycle is tied to the app — created on save, regenerated when hostnames change, deleted when the app is deleted.
+- **One-step TLS via per-app `Internal` / `External` toggle.** Pick `Internal` and HomeYarp issues a cert for the route hostnames signed by its private root CA. Pick `External` and HomeYarp orders from Let's Encrypt. The cert's lifecycle is tied to the app — created on save, regenerated when hostnames change, deleted when the app is deleted.
 
 ## Requirements
 
@@ -46,11 +46,12 @@ OpenAPI docs are exposed at `http://localhost:5269/openapi/v1.json` in Developme
 - `/` — landing page
 - `/applications` — list, create, edit, delete proxied apps. Each row that points at a TLS cert exposes a **Download** button (downloads the public PEM, no private key) and — for self-signed certs — a **trust-instructions** dialog with copy-paste snippets for the Windows / Linux / macOS trust stores, Docker daemon, Docker Desktop, and Firefox.
 - `/applications/new` and `/applications/{id}` — **Simple** form for the everyday fields (identity, routes, TLS, cluster) plus an **Advanced (JSON)** toggle that opens a VS-Code-style editor for the full domain JSON, including YARP transforms, health checks, and HTTP request options
-- `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration. Each row has the same **Download** + **trust-instructions** affordances as the applications page.
+- `/certificates` — list, upload, delete; trigger ACME renewal or self-signed regeneration. A **Root CA** button opens the download + per-OS install instructions for the instance root CA. Each row has the same **Download** + **trust-instructions** affordances as the applications page.
 - `/certificates/upload` — paste a PEM cert + key
 - `/certificates/generate` — generate a self-signed certificate
 - `/certificates/request` — request a fresh certificate from Let's Encrypt
 - `/settings` — read-only view of storage, runtime info, and ACME state
+- `/trust` — **Install the root CA** (nav: *Install CA*): a guided page that detects the device (Windows / Chromebook / Linux / macOS / Android) and walks through trusting the root with copy-and-paste one-liners, downloadable installers and a **Check this device** button. See [Private root CA](#private-root-ca-trust-once).
 
 ## Defining an application
 
@@ -125,7 +126,7 @@ The editor's Save button parses the JSON, validates via the same service path th
 
 ## MCP server
 
-HomeYarp exposes its entire management API as 14 [Model Context Protocol](https://modelcontextprotocol.io/) tools, served over Streamable HTTP at `/mcp` on the HTTP listener — same process as the REST API and Blazor UI. Point an MCP-compatible AI client at it and manage applications and certificates via natural language ("create a passthrough app for Home Assistant at 192.168.1.50", "which certs expire this month?", "renew the cloud cert now").
+HomeYarp exposes its entire management API as 15 [Model Context Protocol](https://modelcontextprotocol.io/) tools, served over Streamable HTTP at `/mcp` on the management listener — same process as the REST API and Blazor UI. Point an MCP-compatible AI client at it and manage applications and certificates via natural language ("create a passthrough app for Home Assistant at 192.168.1.50", "which certs expire this month?", "renew the cloud cert now").
 
 | Tool | Mirrors |
 |---|---|
@@ -137,6 +138,7 @@ HomeYarp exposes its entire management API as 14 [Model Context Protocol](https:
 | `issue_self_signed_certificate`, `regenerate_certificate` | `POST /api/certificates/self-signed`, `POST /api/certificates/{id}/regenerate` |
 | `issue_acme_certificate`, `renew_certificate` | `POST /api/certificates/acme`, `POST /api/certificates/{id}/renew` |
 | `delete_certificate` | `DELETE /api/certificates/{id}` |
+| `get_root_ca` | `GET /api/ca` (the instance root CA's public certificate, fingerprint and validity — never the key) |
 
 The tools call the same in-process services as the REST controllers, so name uniqueness, TLS validation, ACME gating, the auto-managed cert lifecycle, and hot reload all behave identically. Failures come back as MCP tool errors with the underlying message ("Validation failed: …", "…was not found.", name-conflict text) instead of HTTP status codes. The same advanced-fields limitation as the REST API applies (transforms / healthCheck / httpRequest are not in the DTOs — use the Blazor JSON editor for those).
 
@@ -183,7 +185,7 @@ claude mcp add --transport http homeyarp http://localhost:5269/mcp
 The application's `tls` block selects a **mode** (how TLS is handled at the listener) and a **certificate source** (where the cert comes from):
 
 ```json
-"tls": { "mode": 1, "source": 1 }                                  // Offload, Internal (self-signed)
+"tls": { "mode": 1, "source": 1 }                                  // Offload, Internal (signed by the HomeYarp root CA)
 "tls": { "mode": 1, "source": 2 }                                  // Offload, External (Let's Encrypt)
 "tls": { "mode": 1, "source": 0, "certificateId": "<existing>" }   // Offload, Manual (existing cert)
 "tls": { "mode": 2 }                                               // Passthrough
@@ -191,7 +193,7 @@ The application's `tls` block selects a **mode** (how TLS is handled at the list
 
 `source`: `0` = Manual (default), `1` = Internal, `2` = External. For Internal and External, HomeYarp creates the cert on save using the route hostnames as SANs, regenerates it on hostname change, and deletes it when the app is deleted. `certificateId` is populated automatically.
 
-#### One-step path: Internal (self-signed)
+#### One-step path: Internal (HomeYarp root CA)
 
 For internal-only services that aren't reachable from the public internet:
 
@@ -206,7 +208,7 @@ curl -X POST http://localhost:5269/api/applications \
   }'
 ```
 
-HomeYarp self-signs a cert named `home-assistant-internal` covering `ha.home.lan`, binds it to the app, and serves it on `:5443`. Clients need to trust HomeYarp's cert (or be told to ignore the warning) since it isn't issued by a public CA.
+HomeYarp issues a cert named `home-assistant-internal` covering `ha.home.lan`, signs it with its private root CA, binds it to the app, and serves it on `:5443`. Clients that have installed the root CA ([Private root CA](#private-root-ca-trust-once)) trust it automatically; any other client shows a warning, since the CA isn't publicly rooted.
 
 #### One-step path: External (Let's Encrypt)
 
@@ -249,7 +251,7 @@ This is useful for backends that already have their own valid certificates (e.g.
 
 ## Self-signed certificates
 
-For internal-only services where Let's Encrypt won't work (no public DNS, no port-80 ingress, RFC1918 hostnames, IP-only services), HomeYarp can generate a self-signed cert itself. No external dependencies, no NuGet beyond the BCL.
+For internal-only services where Let's Encrypt won't work (no public DNS, no port-80 ingress, RFC1918 hostnames, IP-only services), HomeYarp issues certificates itself, signed by its own [private root CA](#private-root-ca-trust-once). No external dependencies, no NuGet beyond the BCL. (The API and UI still call this source `self-signed` / `Internal`; the certs are CA-signed leaves, not self-signed roots.)
 
 The simplest path is per-application via `tls.source = 1` (see [Enabling TLS](#enabling-tls) above). To generate a cert independently of any application — useful when one cert covers many apps — use:
 
@@ -295,37 +297,40 @@ To regenerate in place on demand (same id, fresh key, fresh expiry):
 - UI: `/certificates` → **Regenerate** on any self-signed cert.
 - API: `POST /api/certificates/{id}/regenerate`.
 
-> **Heads up:** clients need to trust the cert (import into the OS/browser trust store, or accept the warning). Self-signed is fine for internal use; it's not a substitute for a publicly-rooted CA.
+> **Heads up:** clients must trust the HomeYarp root CA (one-time install per device — see [Private root CA](#private-root-ca-trust-once)) or they will show a certificate warning. A HomeYarp-issued cert is fine for internal use; it is not a substitute for a publicly-rooted CA.
 
-### Trusting the cert on a client
+### Trusting Internal certs on a client
 
-The certificate page (`/certificates`) and the applications page (`/applications`) each expose a download icon on every row tied to a self-signed cert and a "How to trust this cert" icon next to it. The download serves the public PEM only (no private key) at `GET /api/certificates/{id}/download`; the trust dialog has copy-paste snippets for:
+Trust the **root CA once** per device — that covers every Internal cert (see [Private root CA](#private-root-ca-trust-once)); no per-cert import is needed. The per-row **How to trust this cert** dialog on `/certificates` and `/applications` remains for certs that are *not* signed by the current root (legacy per-cert self-signed certs created before the CA existed, until migrated), with snippets for the Windows / Debian / RHEL / macOS stores, Docker daemon and Docker Desktop, and Firefox. The per-cert download serves the public PEM only (`GET /api/certificates/{id}/download`).
 
-- Windows system store (`Import-Certificate ... -CertStoreLocation Cert:\LocalMachine\Root` from elevated PowerShell)
-- Debian/Ubuntu (`/usr/local/share/ca-certificates/*.crt` + `update-ca-certificates`) and RHEL/Fedora (`/etc/pki/ca-trust/source/anchors/` + `update-ca-trust`)
-- macOS Keychain (`security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain`)
-- Docker daemon (`/etc/docker/certs.d/<host>/ca.crt`) and Docker Desktop on Windows
-- Firefox (which keeps its own CA list — manual import via Settings → Privacy & Security → Certificates)
-
-ACME-issued and manually-uploaded certs don't need a trust step (their CA is already in the OS store), so the trust dialog only appears for the self-signed source.
+ACME-issued and manually-uploaded certs don't need a trust step (their CA is already in the OS store).
 
 ## Private root CA (trust once)
 
-Self-signed ("Internal") certificates are signed by a **root CA that HomeYarp generates for your instance on first start**
-(`{DataRoot}/ca/`). Install that one root certificate on each device and every Internal certificate — current, future and
-renewed — is trusted, with no per-app browser warnings.
+On first start HomeYarp generates its **own root CA** for the instance and stores it under `{DataRoot}/ca/` (`root.cert.pem` + `root.key.pem`). Every `Internal` certificate is signed by it, so installing that one root certificate on a device makes all current, future and renewed Internal certs trusted — no per-app browser warnings and no re-trusting after a renewal.
 
-0. Easiest: open **`http://<host>:5269/trust`** (nav: *Install CA*) on the device — it detects Windows / Chromebook / Linux / macOS / Android and walks you through it with copy-and-paste one-liners and a "Check this device" test.
-1. Or manually: open **Certificates → Root CA** (or `GET http://<host>:5269/api/ca/root`) and download `homeyarp-root-ca.crt`.
-2. Compare the SHA-256 fingerprint shown in the UI (or `GET /api/ca`) with the file on the device, then install it, e.g. on Windows:
-   `Import-Certificate -FilePath .\homeyarp-root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
-   The dialog has Linux, Docker, Node (`NODE_EXTRA_CA_CERTS`), macOS and Firefox variants.
-3. Certificates issued before the CA existed are individually self-signed; set `HomeYarp:RootCa:MigrateLegacyCertificates=true`
-   (env `ROOTCA_MIGRATE_LEGACY=true` in `compose.yaml`) once your clients trust the root, and the renewal worker re-signs them.
+### Installing the root on a device
 
-Each instance has its **own** CA — nothing is shared between installs, and the CA key never leaves the data folder. Treat
-`ca/root.key.pem` like any CA key: anyone holding it can mint certificates your devices will trust. Configuration:
-`HomeYarp:RootCa:CommonName`, `ValidityDays`, `MigrateLegacyCertificates`.
+- **Easiest — the guided page:** open **`http://<host>:5269/trust`** (nav: *Install CA*) on the device. It detects the OS and shows the shortest path:
+  - **Windows** — copy one PowerShell command (or download a double-click `.cmd`); trusts the CA for the current user, no admin needed.
+  - **Linux / macOS** — one `curl … | sh` command; trusts the system store and, if `certutil` is installed, Chrome/Chromium/Firefox profiles. `DRY_RUN=1` previews.
+  - **Chromebook** — download the file, then Settings → Certificates → Authorities → Import (ChromeOS has no scriptable path).
+  - **Android** — download, then Settings → Security → Install a certificate → CA certificate.
+  - **Check this device** — probes every Internal hostname from your browser and shows trusted / not trusted per host.
+- **Manually:** download `homeyarp-root-ca.crt` (`GET /api/ca/root`, or **Certificates → Root CA**), compare its SHA-256 fingerprint with the one shown in the UI / `GET /api/ca`, and install it with the usual per-OS steps (the Root CA dialog lists Windows, Linux, Docker daemon, Node `NODE_EXTRA_CA_CERTS`, macOS, Firefox).
+
+The installers (`GET /api/ca/install/windows.ps1`, `windows.cmd`, `linux.sh`) embed the **public** certificate and refuse to install unless its SHA-256 equals the fingerprint the instance reports. The management port is plain HTTP on a trusted network, so check the fingerprint against what the installer prints. Node/Claude Code ignores the OS store — point `NODE_EXTRA_CA_CERTS` at a bundle containing the root; Docker's `/etc/docker/certs.d/<host>/ca.crt` is an *exclusive* trust pool for that registry, so put the root there as a clean, whole PEM (never `cat >>` onto a file without a trailing newline).
+
+### Details
+
+- **Parameters:** ECDSA P-256, `CN=HomeYarp Local Root CA`, ~15 years, BasicConstraints `CA:true, pathLen:0` (critical), KeyUsage `KeyCertSign | CrlSign` (critical). Leaves carry random 16-byte serials and an Authority Key Identifier, and are clamped to the CA's expiry. Single tier: the server sends only the leaf, so clients must have the root installed.
+- **Surface (management port only):** `GET /api/ca` (JSON: subject, thumbprint, SHA-256 fingerprint, validity, PEM), `GET /api/ca/root` (download), the MCP tool `get_root_ca`, and the installers above. The private key is never served.
+- **Legacy certificates:** Internal certs issued before the CA existed are individually self-signed and won't chain to it. Set `HomeYarp:RootCa:MigrateLegacyCertificates=true` (env `ROOTCA_MIGRATE_LEGACY=true` in `compose.yaml`) **after** the root is installed on the clients that previously pinned an individual cert (CI runners, Docker hosts, Node bundles): the renewal worker then re-issues every Internal cert whose issuer isn't the root, within about a minute of startup, and reloads. Any regeneration signs under the current root regardless of the flag.
+- **One CA per instance:** nothing is shared between installs — each data root generates its own. Back up `{DataRoot}/ca/` with the rest of the data folder (to storage you control). Losing it isn't a security incident: a fresh CA is generated on the next start (logged as a warning), every device needs the new root, and with the migration flag on all Internal certs are re-signed automatically.
+- **Protect the key:** anyone holding `ca/root.key.pem` can mint certificates every trusting device accepts — keep it out of git, container images and shared backups. It is created `0600` in a `0700` folder, but stored unencrypted (see [Limitations](#limitations--not-yet)).
+
+Configuration under `HomeYarp:RootCa`: `CommonName`, `ValidityDays` (both only used when a CA is first created) and `MigrateLegacyCertificates` (default `false`).
+
 
 ## Let's Encrypt automation
 
@@ -437,6 +442,17 @@ You don't need to copy anything. On cutover:
       "RenewBefore": "30.00:00:00",
       "RenewalInterval": "24:00:00",
       "StartupDelay": "00:01:00"
+    },
+    "SelfSigned": {
+      "Enabled": true,
+      "RenewBefore": "30.00:00:00",
+      "RenewalInterval": "24:00:00",
+      "StartupDelay": "00:01:00"
+    },
+    "RootCa": {
+      "CommonName": "HomeYarp Local Root CA",
+      "ValidityDays": 5475,
+      "MigrateLegacyCertificates": false
     }
   }
 }
@@ -446,6 +462,7 @@ You don't need to copy anything. On cutover:
 - Any listener can be disabled by setting it to `null` or `0`. Disabling `Management` also disables the port gate — the UI/API/MCP then answer on every listener (the pre-`Management` behavior); only do that on a fully trusted network.
 - For production, point the listeners at `80` / `443` / `8443` (or wherever your port forwarding lands) and override the `DataRoot` to a stable absolute path. HTTP-01 challenges always arrive on the `Http` listener. Publish the `Management` port only to the LAN — never add it to the WAN port-forward.
 - ACME settings are read at startup — change them and restart. See [Let's Encrypt automation](#lets-encrypt-automation) above for the full table of knobs.
+- `SelfSigned` configures the Internal-cert renewal worker; `RootCa` configures the instance root CA — see [Self-signed certificates](#self-signed-certificates) and [Private root CA](#private-root-ca-trust-once). Both are read at startup.
 
 ## Logging
 
@@ -623,20 +640,21 @@ HomeYarp.WebServer  ──►  HomeYarp.Application  ──►  HomeYarp.Domain
                   └────►  HomeYarp.Persistance  ──►  HomeYarp.Domain
 ```
 
-- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`, plus advanced types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`).
-- `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), and self-signed issuance (`SelfSigned/` namespace).
-- `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore`.
-- `HomeYarp.WebServer` — composition root: REST controllers, MCP tool classes (`Mcp/`) with the Streamable HTTP endpoint at `/mcp`, Blazor Server pages, Kestrel listener configuration, the `/.well-known/acme-challenge/{token}` endpoint, and the **Serilog** logging pipeline (Console default; File and Seq sinks available on demand).
+- `HomeYarp.Domain` — aggregates and value types: `Application`, `Certificate`, `AcmeMetadata`, `SelfSignedMetadata`, `RootCertificateAuthority`, `RouteDefinition` (with optional `Transforms`), `ClusterDefinition` (with optional `HealthCheck` + `HttpRequest`), `DestinationDefinition`, `TlsConfiguration`, `TlsMode`, `TlsCertificateSource`, `AcmeKeyType`, `CertificateKeyType`, plus advanced types (`RouteTransform`, `HealthCheckConfiguration`, `HttpRequestConfiguration`).
+- `HomeYarp.Application` — services (`ApplicationService`, `CertificateService`, `AcmeService`, `SelfSignedCertificateService`, `RootCaService`), repository abstractions, the YARP bridge (`HomeYarpConfigProvider`), TLS routing (`SniCertificateSelector`, `TlsPassthroughConnectionHandler`, `TlsClientHelloParser`), ACME automation (`Acme/` namespace: `IAcmeChallengeStore`, `IAcmeAccountStore`, `AcmeRenewalService`, `AcmeOptionsValidator`), self-signed/Internal issuance (`SelfSigned/` namespace), and the private root CA (`RootCa/` namespace: `IRootCaService`, `RootCaService`, `RootCaInitializer`, `IRootCaStore`).
+- `HomeYarp.Persistance` — JSON + PEM file storage with in-memory cache and change-token signalling. Includes `FileAcmeAccountStore` and `FileRootCaStore` (`{DataRoot}/ca/`, key `0600`).
+- `HomeYarp.WebServer` — composition root: REST controllers (including `RootCaController` and the generated installers in `RootCa/RootCaInstallScripts.cs`), MCP tool classes (`Mcp/`) with the Streamable HTTP endpoint at `/mcp`, Blazor Server pages, Kestrel listener configuration, the `/.well-known/acme-challenge/{token}` endpoint, and the **Serilog** logging pipeline (Console default; File and Seq sinks available on demand).
 - `HomeYarp.Tests` — xUnit v3 unit tests covering all four production projects. See [Testing](#testing).
 
 See [`CLAUDE.md`](CLAUDE.md) for deeper details about the reload chain, DI lifetimes, validation rules, and design decisions.
 
 ## Limitations / not yet
 
-- **Private keys are stored unencrypted on disk** (including the ACME account key). Acceptable for a home lab; encryption at rest is a planned follow-up.
+- **Private keys are stored unencrypted on disk** (including the ACME account key and the root CA key). Acceptable for a home lab; encryption at rest is a planned follow-up. The CA key is created `0600` in a `0700` folder, but anyone who obtains it can mint certificates your devices trust — treat `{DataRoot}/ca/` as the most sensitive part of the data folder.
+- **The root CA is single-tier with no revocation.** There is no intermediate, CRL or OCSP: leaves are short-lived (renewed automatically) and the only remedy for a compromised CA key is to delete `ca/` (a new CA is generated on next start) and re-install the new root on every device.
 - **No authentication on the management API, UI, or MCP endpoint.** Run it on a trusted network only. Auth on top of the management surface is also a planned follow-up.
 - **`AuthorizationPolicy` on `Application` is a placeholder field.** Per-route ASP.NET Core authorization policies are not wired yet.
-- **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for self-signed wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
+- **ACME supports HTTP-01 only.** No DNS-01, so wildcards can't be issued via ACME (use `Source = Internal` for wildcards). ACME options are read once at startup — editing `appsettings.json` requires a restart.
 - **Hostname changes on `External`-managed apps are rejected.** v1 only re-issues with the original hostnames; to change them, switch to `Manual` (or `Internal`), or delete and recreate. Self-signed (`Internal`) regenerates in place on hostname change.
 - **Offload and passthrough must live on different ports.** Kestrel cannot host both an HTTPS-terminating endpoint and a raw-TCP `ConnectionHandler` on the same listener. If single-port unified TLS routing matters to you, that's a future design topic.
 
