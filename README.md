@@ -309,6 +309,23 @@ The certificate page (`/certificates`) and the applications page (`/applications
 
 ACME-issued and manually-uploaded certs don't need a trust step (their CA is already in the OS store), so the trust dialog only appears for the self-signed source.
 
+## Private root CA (trust once)
+
+Self-signed ("Internal") certificates are signed by a **root CA that HomeYarp generates for your instance on first start**
+(`{DataRoot}/ca/`). Install that one root certificate on each device and every Internal certificate — current, future and
+renewed — is trusted, with no per-app browser warnings.
+
+1. Open **Certificates → Root CA** (or `GET http://<host>:5269/api/ca/root`) and download `homeyarp-root-ca.crt`.
+2. Compare the SHA-256 fingerprint shown in the UI (or `GET /api/ca`) with the file on the device, then install it, e.g. on Windows:
+   `Import-Certificate -FilePath .\homeyarp-root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
+   The dialog has Linux, Docker, Node (`NODE_EXTRA_CA_CERTS`), macOS and Firefox variants.
+3. Certificates issued before the CA existed are individually self-signed; set `HomeYarp:RootCa:MigrateLegacyCertificates=true`
+   (env `ROOTCA_MIGRATE_LEGACY=true` in `compose.yaml`) once your clients trust the root, and the renewal worker re-signs them.
+
+Each instance has its **own** CA — nothing is shared between installs, and the CA key never leaves the data folder. Treat
+`ca/root.key.pem` like any CA key: anyone holding it can mint certificates your devices will trust. Configuration:
+`HomeYarp:RootCa:CommonName`, `ValidityDays`, `MigrateLegacyCertificates`.
+
 ## Let's Encrypt automation
 
 HomeYarp can replace certbot+nginx for issuance and renewal. It speaks ACME v2 (HTTP-01 challenge) directly to Let's Encrypt via [Certes](https://github.com/fszlin/certes), persists the account key under `{DataRoot}/acme/`, and runs a daily background worker that renews any cert whose expiry is within the configured threshold.
@@ -588,6 +605,9 @@ Any sink package in [the Serilog ecosystem](https://github.com/serilog/serilog/w
   acme/
     account.{sha8}.pem      # ACME account key (one per directory URL)
     account.{sha8}.json     # ACME account manifest (email, registration URL)
+  ca/
+    root.cert.pem           # private root CA certificate (public)
+    root.key.pem            # ⚠ root CA PRIVATE KEY (0600) — never commit, ship in an image, or share
 ```
 
 Files are gitignored under `HomeYarp.WebServer/data/`.

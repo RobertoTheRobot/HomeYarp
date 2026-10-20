@@ -54,7 +54,8 @@ try
     builder.Services.AddMcpServer()
         .WithHttpTransport()
         .WithTools<ApplicationTools>()
-        .WithTools<CertificateTools>();
+        .WithTools<CertificateTools>()
+        .WithTools<RootCaTools>();
 
     var app = builder.Build();
 

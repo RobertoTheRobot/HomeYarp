@@ -61,6 +61,8 @@ GET    /api/certificates/{id}                  → CertificateResponse | 404
 GET    /api/certificates/{id}/download         → 200 application/x-pem-file (chain only) | 404
 POST   /api/certificates                       → 201 + CertificateResponse | 400 | 409   (manual PEM upload)
 POST   /api/certificates/self-signed           → 201 + CertificateResponse | 400 | 409   (HomeYarp-generated)
+GET    /api/ca                                 → RootCaResponse (root CA info + PEM, public only)
+GET    /api/ca/root                            → homeyarp-root-ca.crt (PEM download)
 POST   /api/certificates/{id}/regenerate       → 200 + CertificateResponse | 404 | 409   (self-signed only)
 POST   /api/certificates/acme                  → 201 + CertificateResponse | 400 | 409   (Let's Encrypt issue)
 POST   /api/certificates/{id}/renew            → 200 + CertificateResponse | 404 | 409   (ACME-managed only)
@@ -180,6 +182,7 @@ Both repos hold a `volatile ApplicationSnapshot` / `CertificateSnapshot` (immuta
 | `IAcmeChallengeStore`, `IAcmeAccountStore` | Singleton | Challenge store is a process-wide token map; account store wraps shared on-disk state. |
 | `AcmeRenewalService` | Hosted (Singleton) | Background loop. |
 | `SelfSignedRenewalService` | Hosted (Singleton) | Background loop that auto-rotates self-signed certs within `RenewBefore` of expiry. |
+| `RootCaService` / `RootCaInitializer` | Singleton / Hosted | Owns the instance root CA (load-or-create at startup) and signs `Internal` leaves. See the "Root CA" section. |
 | `IApplicationService`, `ICertificateService`, `IAcmeService`, `ISelfSignedCertificateService`, `HomeYarpDbContext` | Scoped | Cheap, stateless; created per request/component activation. `AcmeService` and `SelfSignedCertificateService` each hold a static `ConcurrentDictionary<Guid, SemaphoreSlim>` to serialize concurrent issue/renew/regenerate calls for the same cert id. |
 
 ## Let's Encrypt / ACME
@@ -210,6 +213,32 @@ HTTP-01 requires inbound port 80 to reach the `Http` listener, so port-forward 8
 REST surface: `POST /api/certificates/acme` issues, `POST /api/certificates/{id}/renew` renews. Blazor surface: `/certificates/request` (issuance form), `/certificates` shows ACME badge + per-row "Renew now" button, `/settings` shows a read-only ACME section.
 
 `AcmeOptionsValidator` (in `Acme/`) exposes `EnsureConfigured(options)` (throws) + `IsConfigured(options)` (bool). `AcmeService` uses the former at issue/renew time; `ApplicationService` uses it before kicking off `Source = External` provisioning so the user gets a fast failure at app-save time. The Razor `ApplicationEdit.razor` page uses `IsConfigured` to gray out the External radio button when ACME isn't configured.
+
+## Root CA (private certificate authority for `Internal` certs)
+
+`HomeYarp.Application/RootCa/` — every instance generates **its own** root CA at first startup (`RootCaInitializer`
+hosted service → `IRootCaService.EnsureInitializedAsync`), persisted by `FileRootCaStore` as
+`{DataRoot}/ca/root.cert.pem` + `root.key.pem` (key file `0600`, dir `0700` on Unix). `SelfSignedCertificateService` now
+signs every `Internal` leaf with it (random 128-bit serial, Authority Key Identifier, clamped to the CA's expiry) instead of
+self-signing. Clients install the **root once** and trust all current and future Internal certs, including after renewals.
+
+- CA parameters: ECDSA P-256, `CN=HomeYarp Local Root CA` (`HomeYarp:RootCa:CommonName`), 5475 days (`ValidityDays`),
+  BasicConstraints `CA:true, pathLen:0` (critical), KeyUsage `KeyCertSign|CrlSign` (critical). Single tier: the server sends
+  only the leaf; clients that trust the root validate the one-hop chain.
+- Public surface (management port only): `GET /api/ca` (JSON: subject, thumbprint, SHA-256 fingerprint, validity, PEM),
+  `GET /api/ca/root` (download `homeyarp-root-ca.crt`), MCP tool `get_root_ca`, and a **Root CA** button + install
+  instructions dialog (`TrustRootCaDialog`) on `/certificates`. Never serves the key.
+- **Legacy migration is opt-in:** `HomeYarp:RootCa:MigrateLegacyCertificates` (default `false`). When `true`, the
+  self-signed renewal worker re-issues every `Internal` cert whose issuer is not the root CA's subject (the old per-cert
+  self-signed ones) on its next tick and reloads. Turn it on only **after** the root is installed on every client that pinned
+  an individual leaf (CI runners' OS store + `/etc/docker/certs.d`, Node `NODE_EXTRA_CA_CERTS` bundles, workstation stores) —
+  re-signing makes a pinned leaf stop validating. Regenerating a cert always signs under the current root regardless of the flag.
+- **The CA private key is the most sensitive file HomeYarp owns** — anyone holding it can mint a trusted cert for any
+  hostname on every device that trusts the root (far worse than leaking one app's leaf key). Keep `{DataRoot}/ca/` out of
+  git, container images and shared backups; back it up with the rest of the data folder only to storage you control. Losing
+  it is an inconvenience, not an incident: a fresh CA is generated on next start (logged as a warning) and every device must
+  re-import the new root; with the flag on, all Internal certs are re-signed automatically.
+- Design notes: Reports `homeyarp-native-root-ca-design` (Option C). Manual and ACME (`External`) certs are unaffected.
 
 ## Self-signed certificates
 

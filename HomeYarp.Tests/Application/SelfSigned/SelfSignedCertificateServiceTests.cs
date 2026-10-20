@@ -1,4 +1,5 @@
 using HomeYarp.Application.Abstractions;
+using HomeYarp.Application.RootCa;
 using HomeYarp.Application.SelfSigned;
 using HomeYarp.Tests.TestHelpers;
 using Microsoft.Extensions.Time.Testing;
@@ -10,7 +11,9 @@ public class SelfSignedCertificateServiceTests
     private readonly ICertificateRepository _repo = Substitute.For<ICertificateRepository>();
     private readonly FakeTimeProvider _time = new(DateTimeOffset.Parse("2026-01-15T10:00:00Z"));
 
-    private SelfSignedCertificateService Service => new(_repo, _time);
+    private readonly IRootCaService _rootCa = InMemoryRootCaStore.NewService(time: new FakeTimeProvider(DateTimeOffset.Parse("2026-01-15T10:00:00Z")));
+
+    private SelfSignedCertificateService Service => new(_repo, _rootCa, _time);
 
     [Theory]
     [InlineData("")]
@@ -185,4 +188,29 @@ public class SelfSignedCertificateServiceTests
         CreatedAt = c.CreatedAt,
         SelfSigned = c.SelfSigned
     };
+
+    [Fact]
+    public async Task IssueAsync_SignsLeafWithRootCa_AndChainValidatesAgainstRoot()
+    {
+        _repo.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((Certificate?)null);
+        Certificate? saved = null;
+        CertificateMaterial? savedMaterial = null;
+        await _repo.SaveAsync(Arg.Do<Certificate>(c => saved = c), Arg.Do<CertificateMaterial>(m => savedMaterial = m), Arg.Any<CancellationToken>());
+
+        var cert = await Service.IssueAsync("ca-signed", null, new[] { "app.home.lan" }, CertificateKeyType.Ec256, 365);
+
+        var root = await _rootCa.EnsureInitializedAsync();
+        cert.Issuer.ShouldBe(root.Subject);
+        cert.Subject.ShouldNotBe(cert.Issuer);
+        savedMaterial.ShouldNotBeNull();
+
+        using var leaf = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(savedMaterial!.CertificatePem);
+        using var rootCert = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(root.CertificatePem);
+        using var chain = new System.Security.Cryptography.X509Certificates.X509Chain();
+        chain.ChainPolicy.TrustMode = System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(rootCert);
+        chain.ChainPolicy.RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck;
+        chain.ChainPolicy.VerificationTime = _time.GetUtcNow().UtcDateTime;
+        chain.Build(leaf).ShouldBeTrue(string.Join("; ", chain.ChainStatus.Select(s => s.StatusInformation)));
+    }
 }
