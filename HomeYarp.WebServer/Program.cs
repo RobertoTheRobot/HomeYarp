@@ -48,7 +48,8 @@ try
         .AddHomeYarpPersistance(builder.Configuration)
         .AddHomeYarpApplication(builder.Configuration);
 
-    builder.Services.AddReverseProxy();
+    // Global response-header hardening for every proxied route (nosniff, strip X-Powered-By).
+    builder.Services.AddReverseProxy().AddTransforms(SecurityHeaderTransforms.Apply);
 
     // MCP server: exposes the full management API as MCP tools over Streamable HTTP at /mcp.
     builder.Services.AddMcpServer()
